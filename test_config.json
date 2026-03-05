@@ -1,0 +1,22 @@
+{
+  "timeout_sec": 60,
+  "models": [
+    {
+      "path": "/data/local/tmp/llm_test/models/Phi-4-mini-instruct_multi-prefill-seq_q8_ekv1280.task",
+      "max_tokens": 1280,
+      "backend": "CPU"
+    },
+    {
+      "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
+      "max_tokens": 1024,
+      "backend": "GPU"
+    }
+  ],
+  "prompts": [
+    "Hello, what can you do?",
+    "Explain quantum computing in simple terms.",
+    "9.9 - 9.11 = ?",
+    "What is the capital of France?",
+    "Explain special relativity"
+  ]
+}
