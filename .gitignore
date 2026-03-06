@@ -15,6 +15,7 @@ env/
 models/
 results/
 logs/
+reports/
 *.task
 *.bin
 *.gguf
