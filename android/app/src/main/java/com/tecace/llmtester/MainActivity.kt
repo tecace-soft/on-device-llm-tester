@@ -1,5 +1,6 @@
 package com.tecace.llmtester
 
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
@@ -36,7 +37,15 @@ class MainActivity : AppCompatActivity() {
             else  -> LlmInference.Backend.CPU
         }
 
+        val promptId = intent.getStringExtra("prompt_id") ?: ""
+        val promptCategory = intent.getStringExtra("prompt_category") ?: ""
+        val promptLang = intent.getStringExtra("prompt_lang") ?: ""
+
         Log.d(TAG, "==== Test Start ====")
+        Log.d(TAG, "Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.PRODUCT})")
+        Log.d(TAG, "SOC: ${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}")
+        Log.d(TAG, "Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
+        Log.d(TAG, "PromptID: $promptId | Category: $promptCategory | Lang: $promptLang")
         Log.d(TAG, "Prompt: $prompt")
         Log.d(TAG, "ModelPath: $modelPath")
         Log.d(TAG, "MaxTokens: $maxTokens")
@@ -60,7 +69,7 @@ class MainActivity : AppCompatActivity() {
                 val latency = System.currentTimeMillis() - startTime
                 Log.d(TAG, ">>> LlmRunner.generate() DONE — ${latency}ms")
 
-                saveResult(prompt, response, latency, modelPath, backendStr)
+                saveResult(prompt, response, latency, modelPath, backendStr, promptId, promptCategory, promptLang)
             } catch (e: Exception) {
                 Log.e(TAG, "CAUGHT EXCEPTION: ${e::class.java.name}: ${e.message}")
                 Log.e(TAG, "Stacktrace:\n${e.stackTraceToString()}")
@@ -69,6 +78,19 @@ class MainActivity : AppCompatActivity() {
                 Log.d(TAG, "==== Test Finished ====")
                 finishAffinity()
             }
+        }
+    }
+
+    private fun getDeviceInfo(): JSONObject {
+        return JSONObject().apply {
+            put("manufacturer", Build.MANUFACTURER)
+            put("model", Build.MODEL)
+            put("product", Build.PRODUCT)
+            put("soc", "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}")
+            put("android_version", Build.VERSION.RELEASE)
+            put("sdk_int", Build.VERSION.SDK_INT)
+            put("cpu_cores", Runtime.getRuntime().availableProcessors())
+            put("max_heap_mb", Runtime.getRuntime().maxMemory() / 1024 / 1024)
         }
     }
 
@@ -84,12 +106,20 @@ class MainActivity : AppCompatActivity() {
         response: String,
         latency: Long,
         modelPath: String,
-        backend: String
+        backend: String,
+        promptId: String,
+        promptCategory: String,
+        promptLang: String
     ) {
         val json = JSONObject().apply {
             put("status", "success")
+            put("prompt_id", promptId)
+            put("prompt_category", promptCategory)
+            put("prompt_lang", promptLang)
             put("model_path", modelPath)
+            put("model_name", File(modelPath).name)
             put("backend", backend)
+            put("device", getDeviceInfo())
             put("prompt", prompt)
             put("response", response)
             put("latency_ms", latency)
@@ -101,6 +131,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveError(prompt: String, error: String) {
         val json = JSONObject().apply {
             put("status", "error")
+            put("device", getDeviceInfo())
             put("prompt", prompt)
             put("error", error)
             put("timestamp", System.currentTimeMillis())

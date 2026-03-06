@@ -2,21 +2,193 @@
   "timeout_sec": 60,
   "models": [
     {
-      "path": "/data/local/tmp/llm_test/models/Phi-4-mini-instruct_multi-prefill-seq_q8_ekv1280.task",
+      "path": "/data/local/tmp/llm_test/models/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task",
+      "max_tokens": 1280,
+      "backend": "CPU"
+    },
+    {
+      "path": "/data/local/tmp/llm_test/models/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
       "max_tokens": 1280,
       "backend": "CPU"
     },
     {
       "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
       "max_tokens": 1024,
-      "backend": "GPU"
+      "backend": "CPU"
+    },
+    {
+      "path": "/data/local/tmp/llm_test/models/gemma-3n-E2B-it-int4.task",
+      "max_tokens": 1024,
+      "backend": "CPU"
+    },
+    {
+      "path": "/data/local/tmp/llm_test/models/Phi-4-mini-instruct_multi-prefill-seq_q8_ekv1280.task",
+      "max_tokens": 1280,
+      "backend": "CPU"
     }
   ],
   "prompts": [
-    "Hello, what can you do?",
-    "Explain quantum computing in simple terms.",
-    "9.9 - 9.11 = ?",
-    "What is the capital of France?",
-    "Explain special relativity"
+    {
+      "id": "minimal_01",
+      "category": "minimal_output",
+      "lang": "en",
+      "prompt": "What is 2 + 2? Reply with only the number."
+    },
+    {
+      "id": "minimal_02",
+      "category": "minimal_output",
+      "lang": "en",
+      "prompt": "Is water wet? Reply with only 'yes' or 'no'."
+    },
+    {
+      "id": "factual_01",
+      "category": "knowledge",
+      "lang": "en",
+      "prompt": "What is the capital of France?"
+    },
+    {
+      "id": "factual_02",
+      "category": "knowledge",
+      "lang": "en",
+      "prompt": "What is the chemical formula for water?"
+    },
+    {
+      "id": "math_01",
+      "category": "math",
+      "lang": "en",
+      "prompt": "What is 237 + 485?"
+    },
+    {
+      "id": "math_02",
+      "category": "math",
+      "lang": "en",
+      "prompt": "9.11 - 9.9 = ?"
+    },
+    {
+      "id": "math_03",
+      "category": "math",
+      "lang": "en",
+      "prompt": "A train travels 60 km in 45 minutes. What is its speed in km/h?"
+    },
+    {
+      "id": "reason_01",
+      "category": "reasoning",
+      "lang": "en",
+      "prompt": "A is taller than B. B is taller than C. Who is the tallest?"
+    },
+    {
+      "id": "reason_02",
+      "category": "reasoning",
+      "lang": "en",
+      "prompt": "If all roses are flowers and some flowers fade quickly, can we say some roses fade quickly?"
+    },
+    {
+      "id": "explain_short_01",
+      "category": "knowledge",
+      "lang": "en",
+      "prompt": "Explain quantum computing in simple terms."
+    },
+    {
+      "id": "explain_short_02",
+      "category": "knowledge",
+      "lang": "en",
+      "prompt": "Explain how a refrigerator works."
+    },
+    {
+      "id": "explain_long_01",
+      "category": "long_generation",
+      "lang": "en",
+      "prompt": "Explain the theory of special relativity, including time dilation and length contraction, with examples."
+    },
+    {
+      "id": "explain_long_02",
+      "category": "long_generation",
+      "lang": "en",
+      "prompt": "Describe the process of photosynthesis from light absorption to glucose production in detail."
+    },
+    {
+      "id": "explain_long_03",
+      "category": "long_generation",
+      "lang": "en",
+      "prompt": "Write a detailed comparison of TCP and UDP protocols. Cover reliability, speed, use cases, and header structure."
+    },
+    {
+      "id": "code_01",
+      "category": "code",
+      "lang": "en",
+      "prompt": "Write a Python function that returns the factorial of a number."
+    },
+    {
+      "id": "code_02",
+      "category": "code",
+      "lang": "en",
+      "prompt": "Write a Python function for binary search on a sorted list. Include docstring and edge case handling."
+    },
+    {
+      "id": "code_03",
+      "category": "code",
+      "lang": "en",
+      "prompt": "Write a Python class for a stack data structure with push, pop, peek, and is_empty methods."
+    },
+    {
+      "id": "structured_01",
+      "category": "structured_output",
+      "lang": "en",
+      "prompt": "List these items as a JSON array: apple, banana, grape, mango"
+    },
+    {
+      "id": "structured_02",
+      "category": "structured_output",
+      "lang": "en",
+      "prompt": "Create a JSON object with fields: name, age, city, hobbies (array). Fill with sample data for a software engineer."
+    },
+    {
+      "id": "structured_03",
+      "category": "structured_output",
+      "lang": "en",
+      "prompt": "Generate a markdown table comparing Python, JavaScript, and Rust across: typing, speed, memory safety, and primary use case."
+    },
+    {
+      "id": "summarize_01",
+      "category": "summarization",
+      "lang": "en",
+      "prompt": "Summarize in one sentence: Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed. It focuses on developing computer programs that can access data and use it to learn for themselves. The process begins with observations or data, such as examples, direct experience, or instruction, in order to look for patterns in data and make better decisions in the future."
+    },
+    {
+      "id": "summarize_02",
+      "category": "summarization",
+      "lang": "en",
+      "prompt": "Summarize in 2-3 sentences: The Apollo 11 mission was the spaceflight that first landed humans on the Moon. Commander Neil Armstrong and lunar module pilot Buzz Aldrin landed the Apollo Lunar Module Eagle on July 20, 1969. Armstrong became the first person to step onto the lunar surface six hours and 39 minutes later. Aldrin joined him 19 minutes later. They spent about two and a quarter hours together exploring the site they named Tranquility Base. Armstrong and Aldrin collected 47.5 pounds of lunar material to bring back to Earth."
+    },
+    {
+      "id": "creative_01",
+      "category": "creative",
+      "lang": "en",
+      "prompt": "Write a short story in exactly 5 sentences about a robot discovering the ocean for the first time."
+    },
+    {
+      "id": "creative_02",
+      "category": "creative",
+      "lang": "en",
+      "prompt": "Come up with 5 creative startup ideas that combine AI with healthcare."
+    },
+    {
+      "id": "instruct_01",
+      "category": "instruction_following",
+      "lang": "en",
+      "prompt": "List exactly 3 pros and 3 cons of remote work. Use bullet points."
+    },
+    {
+      "id": "instruct_02",
+      "category": "instruction_following",
+      "lang": "en",
+      "prompt": "Rewrite this sentence in passive voice: The cat chased the mouse across the kitchen floor."
+    },
+    {
+      "id": "prefill_stress_01",
+      "category": "long_context",
+      "lang": "en",
+      "prompt": "Read the following and answer the question at the end. The global semiconductor industry has experienced significant shifts over the past decade. Initially dominated by American and Japanese companies, the landscape has changed with the rise of TSMC in Taiwan and Samsung in South Korea as leading foundries. The COVID-19 pandemic exposed vulnerabilities in the supply chain, leading to widespread chip shortages that affected automotive, consumer electronics, and industrial sectors. In response, the United States passed the CHIPS Act to incentivize domestic semiconductor manufacturing. The European Union followed with its own European Chips Act. Meanwhile, China has been investing heavily in building its own chip-making capabilities despite export restrictions. Question: What event exposed vulnerabilities in the semiconductor supply chain?"
+    }
   ]
 }

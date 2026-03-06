@@ -56,6 +56,9 @@ def run_test_batch(config_path="test_config.json"):
     print("=== Batch Testing 시작 ===")
     wake_device()
 
+    total = len(models) * len(prompts)
+    current = 0
+
     for model in models:
         model_path = model["path"]
         max_tokens = model.get("max_tokens", 1024)
@@ -68,7 +71,13 @@ def run_test_batch(config_path="test_config.json"):
 
         Log(f"[Model: {model_name}] [Backend: {backend}] 테스트 시작")
 
-        for prompt in prompts:
+        for prompt_entry in prompts:
+            current += 1
+            prompt_id = prompt_entry["id"]
+            category = prompt_entry.get("category", "unknown")
+            lang = prompt_entry.get("lang", "en")
+            prompt_text = prompt_entry["prompt"]
+
             Log("기기 초기화...")
             subprocess.run(f"adb shell am force-stop {package_name}", shell=True)
             subprocess.run("adb logcat -c", shell=True)
@@ -77,14 +86,17 @@ def run_test_batch(config_path="test_config.json"):
 
             initial_count = get_file_count()
 
-            Log(f"Testing: {prompt[:30]}...")
+            Log(f"[{current}/{total}] [{prompt_id}] [{category}] [{lang}] {prompt_text[:40]}...")
             cmd = [
                 "adb", "shell", "am", "start", "-W", "-S",
                 "-n", f"{package_name}/.MainActivity",
                 "--es", "model_path", model_path,
-                "--es", "input_prompt", f"\"{prompt}\"",
+                "--es", "input_prompt", f"\"{prompt_text}\"",
                 "--ei", "max_tokens", str(max_tokens),
-                "--es", "backend", backend
+                "--es", "backend", backend,
+                "--es", "prompt_id", prompt_id,
+                "--es", "prompt_category", category,
+                "--es", "prompt_lang", lang
             ]
             subprocess.run(cmd, capture_output=True)
 
@@ -97,11 +109,11 @@ def run_test_batch(config_path="test_config.json"):
                     shell=True, capture_output=True, text=True
                 )
                 if error_check.stdout.strip():
-                    Log("⚠️ [APP ERROR] 앱 내부 오류 발생")
+                    Log(f"⚠️ [APP ERROR] [{prompt_id}] 앱 내부 오류 발생")
                     break
 
                 if get_file_count() > initial_count:
-                    Log("✅ [SUCCESS]")
+                    Log(f"✅ [SUCCESS] [{prompt_id}]")
                     success = True
                     break
 
@@ -109,11 +121,11 @@ def run_test_batch(config_path="test_config.json"):
                 time.sleep(2)
 
             if not success:
-                Log(f"❌ [FAILED] {model_name} 응답 없음 또는 오류 발생")
+                Log(f"❌ [FAILED] [{prompt_id}] {model_name} 응답 없음 또는 오류 발생")
 
             time.sleep(5)
 
-    print("\n=== 모든 배치 테스트 완료 ===")
+    print(f"\n=== 모든 배치 테스트 완료 ({current}/{total}) ===")
 
 if __name__ == "__main__":
     run_test_batch()
