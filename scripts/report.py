@@ -20,6 +20,8 @@ def load_json_files(directory):
             continue
 
         device = data.get("device", {})
+        metrics = data.get("metrics", {})
+
         rows.append({
             "status": data.get("status", ""),
             "prompt_id": data.get("prompt_id", ""),
@@ -36,22 +38,66 @@ def load_json_files(directory):
             "prompt": data.get("prompt", ""),
             "response": data.get("response", ""),
             "latency_ms": data.get("latency_ms", ""),
+            "init_time_ms": data.get("init_time_ms", ""),
+            "ttft_ms": metrics.get("ttft_ms", ""),
+            "prefill_time_ms": metrics.get("prefill_time_ms", ""),
+            "decode_time_ms": metrics.get("decode_time_ms", ""),
+            "input_token_count": metrics.get("input_token_count", ""),
+            "output_token_count": metrics.get("output_token_count", ""),
+            "prefill_tps": metrics.get("prefill_tps", ""),
+            "decode_tps": metrics.get("decode_tps", ""),
+            "peak_java_memory_mb": metrics.get("peak_java_memory_mb", ""),
+            "peak_native_memory_mb": metrics.get("peak_native_memory_mb", ""),
+            "itl_p50_ms": metrics.get("itl_p50_ms", ""),
+            "itl_p95_ms": metrics.get("itl_p95_ms", ""),
+            "itl_p99_ms": metrics.get("itl_p99_ms", ""),
             "timestamp": data.get("timestamp", ""),
         })
     return rows
+
+def percentile(sorted_vals, p):
+    if not sorted_vals:
+        return 0
+    idx = int(p / 100.0 * (len(sorted_vals) - 1))
+    return sorted_vals[min(idx, len(sorted_vals) - 1)]
 
 def compute_stats(rows):
     success = [r for r in rows if r["status"] == "success" and r["latency_ms"] != ""]
     if not success:
         return None
-    latencies = [r["latency_ms"] for r in success]
+
+    def safe_vals(key):
+        return [r[key] for r in success if r[key] != "" and r[key] is not None]
+
+    latencies = sorted(safe_vals("latency_ms"))
+    ttfts = safe_vals("ttft_ms")
+    decode_tps_vals = safe_vals("decode_tps")
+    prefill_tps_vals = safe_vals("prefill_tps")
+    init_times = safe_vals("init_time_ms")
+    peak_java_mems = safe_vals("peak_java_memory_mb")
+    peak_native_mems = safe_vals("peak_native_memory_mb")
+    output_tokens = safe_vals("output_token_count")
+
+    def avg(vals):
+        return sum(vals) / len(vals) if vals else 0
+
     return {
         "total": len(rows),
         "success": len(success),
         "errors": len(rows) - len(success),
-        "avg": sum(latencies) / len(latencies),
-        "min": min(latencies),
-        "max": max(latencies),
+        "avg_latency": avg(latencies),
+        "min_latency": min(latencies) if latencies else 0,
+        "max_latency": max(latencies) if latencies else 0,
+        "p50_latency": percentile(latencies, 50),
+        "p95_latency": percentile(latencies, 95),
+        "p99_latency": percentile(latencies, 99),
+        "avg_ttft": avg(ttfts),
+        "avg_decode_tps": avg(decode_tps_vals),
+        "avg_prefill_tps": avg(prefill_tps_vals),
+        "avg_init_time": avg(init_times),
+        "avg_peak_java_mem": avg(peak_java_mems),
+        "avg_peak_native_mem": avg(peak_native_mems),
+        "avg_output_tokens": avg(output_tokens),
     }
 
 def write_csv(rows, output_path):
@@ -80,7 +126,19 @@ class ReportWriter:
             return
         self.write(f"  {label}")
         self.write(f"    Tests: {stats['success']}/{stats['total']} (errors: {stats['errors']})")
-        self.write(f"    Avg: {stats['avg']:,.2f} ms | Min: {stats['min']:,} ms | Max: {stats['max']:,} ms")
+        self.write(f"    Latency (p50|p95|p99) — {stats['p50_latency']:,.0f} | {stats['p95_latency']:,.0f} | {stats['p99_latency']:,.0f} ms  (Avg: {stats['avg_latency']:,.0f} | Min: {stats['min_latency']:,} | Max: {stats['max_latency']:,} ms)")
+        if stats["avg_ttft"]:
+            self.write(f"    TTFT         — Avg: {stats['avg_ttft']:,.0f} ms")
+        if stats["avg_decode_tps"]:
+            self.write(f"    Decode TPS   — Avg: {stats['avg_decode_tps']:,.1f} tok/s")
+        if stats["avg_prefill_tps"]:
+            self.write(f"    Prefill TPS  — Avg: {stats['avg_prefill_tps']:,.1f} tok/s")
+        if stats["avg_init_time"]:
+            self.write(f"    Init Time    — Avg: {stats['avg_init_time']:,.0f} ms")
+        if stats["avg_peak_native_mem"]:
+            self.write(f"    Peak Memory  — Native: {stats['avg_peak_native_mem']:,.0f} MB | Java: {stats['avg_peak_java_mem']:,.0f} MB")
+        if stats["avg_output_tokens"]:
+            self.write(f"    Output Tokens— Avg: {stats['avg_output_tokens']:,.0f}")
 
 def generate_report():
     if not os.path.exists(RESULTS_DIR):

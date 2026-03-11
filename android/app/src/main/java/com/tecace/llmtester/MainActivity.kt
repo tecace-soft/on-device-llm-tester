@@ -3,6 +3,7 @@ package com.tecace.llmtester
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
@@ -17,6 +18,7 @@ class MainActivity : AppCompatActivity() {
     private val TAG = "LLM_TESTER"
     private lateinit var llmRunner: LlmRunner
 
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -27,9 +29,14 @@ class MainActivity : AppCompatActivity() {
 
         llmRunner = LlmRunner(this)
 
-        val prompt = intent.getStringExtra("input_prompt") ?: "Hello"
-        val modelPath = intent.getStringExtra("model_path")
-            ?: "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task"
+        if (!intent.hasExtra("input_prompt") || !intent.hasExtra("model_path")) {
+            Log.w(TAG, ">>> No test intent extras found. Skipping (likely -S restart ghost launch).")
+            finishAffinity()
+            return
+        }
+
+        val prompt = intent.getStringExtra("input_prompt")!!
+        val modelPath = intent.getStringExtra("model_path")!!
         val maxTokens = intent.getIntExtra("max_tokens", 1024)
         val backendStr = intent.getStringExtra("backend") ?: "CPU"
         val backend = when (backendStr.uppercase()) {
@@ -61,15 +68,16 @@ class MainActivity : AppCompatActivity() {
 
                 Log.d(TAG, ">>> LlmRunner.init() START")
                 llmRunner.init(modelPath, maxTokens, backend)
-                Log.d(TAG, ">>> LlmRunner.init() DONE")
+                Log.d(TAG, ">>> LlmRunner.init() DONE — ${llmRunner.initTimeMs}ms")
+
+                val inputTokenCount = estimateTokenCount(prompt)
+                Log.d(TAG, ">>> Estimated input tokens: $inputTokenCount")
 
                 Log.d(TAG, ">>> LlmRunner.generate() START")
-                val startTime = System.currentTimeMillis()
-                val response = llmRunner.generate(prompt)
-                val latency = System.currentTimeMillis() - startTime
-                Log.d(TAG, ">>> LlmRunner.generate() DONE — ${latency}ms")
+                val metrics = llmRunner.generate(prompt, inputTokenCount)
+                Log.d(TAG, ">>> LlmRunner.generate() DONE — ${metrics.totalLatencyMs}ms")
 
-                saveResult(prompt, response, latency, modelPath, backendStr, promptId, promptCategory, promptLang)
+                saveResult(prompt, metrics, modelPath, backendStr, promptId, promptCategory, promptLang)
             } catch (e: Exception) {
                 Log.e(TAG, "CAUGHT EXCEPTION: ${e::class.java.name}: ${e.message}")
                 Log.e(TAG, "Stacktrace:\n${e.stackTraceToString()}")
@@ -81,6 +89,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun estimateTokenCount(text: String): Int {
+        val wordCount = text.trim().split(Regex("\\s+")).size
+        val cjkCount = text.count { it.code in 0x4E00..0x9FFF || it.code in 0xAC00..0xD7AF || it.code in 0x3040..0x30FF }
+        return if (cjkCount > text.length / 3) {
+            (text.length * 0.7).toInt().coerceAtLeast(1)
+        } else {
+            (wordCount * 1.3).toInt().coerceAtLeast(1)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun getDeviceInfo(): JSONObject {
         return JSONObject().apply {
             put("manufacturer", Build.MANUFACTURER)
@@ -97,14 +116,14 @@ class MainActivity : AppCompatActivity() {
     private fun getResultFile(): File {
         val resultDir = File(filesDir, "results")
         if (!resultDir.exists()) resultDir.mkdirs()
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(Date())
         return File(resultDir, "result_$timestamp.json")
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun saveResult(
         prompt: String,
-        response: String,
-        latency: Long,
+        metrics: InferenceMetrics,
         modelPath: String,
         backend: String,
         promptId: String,
@@ -121,13 +140,18 @@ class MainActivity : AppCompatActivity() {
             put("backend", backend)
             put("device", getDeviceInfo())
             put("prompt", prompt)
-            put("response", response)
-            put("latency_ms", latency)
+            put("response", metrics.response)
+            put("latency_ms", metrics.totalLatencyMs)
+            put("init_time_ms", llmRunner.initTimeMs)
+            put("metrics", metrics.toJson())
             put("timestamp", System.currentTimeMillis())
         }
-        getResultFile().writeText(json.toString(2))
+        val file = getResultFile()
+        file.writeText(json.toString(2))
+        Log.d(TAG, ">>> Result saved: ${file.absolutePath}")
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun saveError(prompt: String, error: String) {
         val json = JSONObject().apply {
             put("status", "error")
