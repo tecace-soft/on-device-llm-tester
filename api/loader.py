@@ -1,160 +1,196 @@
 from __future__ import annotations
 
-import json
 import logging
-import os
-from typing import List, Optional
+from typing import Optional
+
+import aiosqlite
 
 from schemas import DeviceInfo, Metrics, ResultItem
 
 logger = logging.getLogger(__name__)
 
-RESULTS_DIR = os.getenv("RESULTS_DIR", "./results")
+
+# ── Query builder ─────────────────────────────────────────────────────────────
+
+def _build_where(
+    device: Optional[str],
+    model: Optional[str],
+    category: Optional[str],
+    backend: Optional[str],
+    status: Optional[str],
+) -> tuple[str, list]:
+    clauses: list[str] = []
+    params: list = []
+
+    if device:
+        clauses.append("d.model = ?")
+        params.append(device)
+    if model:
+        clauses.append("m.model_name = ?")
+        params.append(model)
+    if category:
+        clauses.append("p.category = ?")
+        params.append(category)
+    if backend:
+        clauses.append("UPPER(m.backend) = UPPER(?)")
+        params.append(backend)
+    if status and status != "all":
+        clauses.append("r.status = ?")
+        params.append(status)
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
 
 
-def _parse_file(file_path: str) -> Optional[ResultItem]:
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        logger.warning(f"Skip {file_path}: {e}")
-        return None
+_SELECT = """
+    SELECT
+        r.status,
+        p.prompt_id         AS prompt_id,
+        p.category          AS prompt_category,
+        p.lang              AS prompt_lang,
+        m.model_name,
+        m.model_path,
+        m.backend,
+        d.manufacturer,
+        d.model             AS device_model,
+        d.product,
+        d.soc,
+        d.android_version,
+        d.sdk_int,
+        d.cpu_cores,
+        d.max_heap_mb,
+        p.prompt_text       AS prompt,
+        r.response,
+        r.latency_ms,
+        r.init_time_ms,
+        r.error,
+        r.timestamp,
+        r.ttft_ms,
+        r.prefill_time_ms,
+        r.decode_time_ms,
+        r.input_token_count,
+        r.output_token_count,
+        r.prefill_tps,
+        r.decode_tps,
+        r.peak_java_memory_mb,
+        r.peak_native_memory_mb,
+        r.itl_p50_ms,
+        r.itl_p95_ms,
+        r.itl_p99_ms
+    FROM results r
+    JOIN devices d ON r.device_id = d.id
+    JOIN models  m ON r.model_id  = m.id
+    JOIN prompts p ON r.prompt_id = p.id
+"""
 
-    device_raw = data.get("device", {})
-    metrics_raw = data.get("metrics")
 
-    try:
-        device = DeviceInfo(**{k: device_raw.get(k, v) for k, v in DeviceInfo().model_fields.items()
-                               if k in device_raw} if device_raw else {})
-        device = DeviceInfo(
-            manufacturer=device_raw.get("manufacturer", ""),
-            model=device_raw.get("model", ""),
-            product=device_raw.get("product", ""),
-            soc=device_raw.get("soc", ""),
-            android_version=device_raw.get("android_version", ""),
-            sdk_int=device_raw.get("sdk_int", 0),
-            cpu_cores=device_raw.get("cpu_cores", 0),
-            max_heap_mb=device_raw.get("max_heap_mb", 0),
+def _row_to_item(row: aiosqlite.Row) -> ResultItem:
+    has_metrics = row["status"] == "success" and row["ttft_ms"] is not None
+    metrics = (
+        Metrics(
+            ttft_ms=row["ttft_ms"],
+            prefill_time_ms=row["prefill_time_ms"],
+            decode_time_ms=row["decode_time_ms"],
+            input_token_count=row["input_token_count"],
+            output_token_count=row["output_token_count"],
+            prefill_tps=row["prefill_tps"],
+            decode_tps=row["decode_tps"],
+            peak_java_memory_mb=row["peak_java_memory_mb"],
+            peak_native_memory_mb=row["peak_native_memory_mb"],
+            itl_p50_ms=row["itl_p50_ms"],
+            itl_p95_ms=row["itl_p95_ms"],
+            itl_p99_ms=row["itl_p99_ms"],
         )
-    except Exception:
-        device = DeviceInfo()
-
-    metrics = None
-    if metrics_raw and isinstance(metrics_raw, dict):
-        try:
-            metrics = Metrics(
-                ttft_ms=metrics_raw.get("ttft_ms"),
-                prefill_time_ms=metrics_raw.get("prefill_time_ms"),
-                decode_time_ms=metrics_raw.get("decode_time_ms"),
-                input_token_count=metrics_raw.get("input_token_count"),
-                output_token_count=metrics_raw.get("output_token_count"),
-                prefill_tps=metrics_raw.get("prefill_tps"),
-                decode_tps=metrics_raw.get("decode_tps"),
-                peak_java_memory_mb=metrics_raw.get("peak_java_memory_mb"),
-                peak_native_memory_mb=metrics_raw.get("peak_native_memory_mb"),
-                itl_p50_ms=metrics_raw.get("itl_p50_ms"),
-                itl_p95_ms=metrics_raw.get("itl_p95_ms"),
-                itl_p99_ms=metrics_raw.get("itl_p99_ms"),
-            )
-        except Exception:
-            pass
+        if has_metrics
+        else None
+    )
 
     return ResultItem(
-        status=data.get("status", ""),
-        prompt_id=data.get("prompt_id", ""),
-        prompt_category=data.get("prompt_category", ""),
-        prompt_lang=data.get("prompt_lang", ""),
-        model_name=data.get("model_name", ""),
-        model_path=data.get("model_path", ""),
-        backend=data.get("backend", ""),
-        device=device,
-        prompt=data.get("prompt", ""),
-        response=data.get("response", ""),
-        latency_ms=data.get("latency_ms") if data.get("latency_ms") != "" else None,
-        init_time_ms=data.get("init_time_ms") if data.get("init_time_ms") != "" else None,
+        status=row["status"],
+        prompt_id=row["prompt_id"] or "",
+        prompt_category=row["prompt_category"] or "",
+        prompt_lang=row["prompt_lang"] or "",
+        model_name=row["model_name"] or "",
+        model_path=row["model_path"] or "",
+        backend=row["backend"] or "",
+        device=DeviceInfo(
+            manufacturer=row["manufacturer"] or "",
+            model=row["device_model"] or "",
+            product=row["product"] or "",
+            soc=row["soc"] or "",
+            android_version=row["android_version"] or "",
+            sdk_int=row["sdk_int"] or 0,
+            cpu_cores=row["cpu_cores"] or 0,
+            max_heap_mb=row["max_heap_mb"] or 0,
+        ),
+        prompt=row["prompt"] or "",
+        response=row["response"] or "",
+        latency_ms=row["latency_ms"],
+        init_time_ms=row["init_time_ms"],
         metrics=metrics,
-        error=data.get("error"),
-        timestamp=data.get("timestamp"),
+        error=row["error"],
+        timestamp=row["timestamp"],
     )
 
 
-def load_all(
-    results_dir: str = RESULTS_DIR,
+# ── Public API ────────────────────────────────────────────────────────────────
+
+async def load_all(
+    db: aiosqlite.Connection,
     device: Optional[str] = None,
     model: Optional[str] = None,
     category: Optional[str] = None,
     backend: Optional[str] = None,
-    status: Optional[str] = None,  # "success" | "error" | None (all)
-) -> List[ResultItem]:
-    rows: List[ResultItem] = []
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[ResultItem], int]:
+    where, params = _build_where(device, model, category, backend, status)
 
-    if not os.path.isdir(results_dir):
-        return rows
+    count_query = f"SELECT COUNT(*) FROM results r JOIN devices d ON r.device_id = d.id JOIN models m ON r.model_id = m.id JOIN prompts p ON r.prompt_id = p.id {where}"
+    async with db.execute(count_query, params) as cur:
+        row = await cur.fetchone()
+        total = row[0] if row else 0
 
-    for device_dir in sorted(os.listdir(results_dir)):
-        device_path = os.path.join(results_dir, device_dir)
-        if not os.path.isdir(device_path) or device_dir.startswith("_"):
-            continue
+    data_query = f"{_SELECT} {where} ORDER BY r.timestamp DESC LIMIT ? OFFSET ?"
+    async with db.execute(data_query, params + [limit, offset]) as cur:
+        rows = await cur.fetchall()
 
-        if device and device_dir != device:
-            continue
-
-        for model_dir in sorted(os.listdir(device_path)):
-            model_path = os.path.join(device_path, model_dir)
-            if not os.path.isdir(model_path):
-                continue
-
-            if model and model_dir != model:
-                continue
-
-            for file_name in sorted(os.listdir(model_path)):
-                if not file_name.endswith(".json"):
-                    continue
-
-                item = _parse_file(os.path.join(model_path, file_name))
-                if item is None:
-                    continue
-
-                if category and item.prompt_category != category:
-                    continue
-                if backend and item.backend.upper() != backend.upper():
-                    continue
-                if status and status != "all" and item.status != status:
-                    continue
-
-                rows.append(item)
-
-    return rows
+    return [_row_to_item(r) for r in rows], total
 
 
-def list_devices(results_dir: str = RESULTS_DIR) -> List[str]:
-    if not os.path.isdir(results_dir):
-        return []
-    return sorted(
-        d for d in os.listdir(results_dir)
-        if os.path.isdir(os.path.join(results_dir, d)) and not d.startswith("_")
-    )
+async def list_devices(db: aiosqlite.Connection) -> list[str]:
+    async with db.execute("SELECT DISTINCT model FROM devices ORDER BY model") as cur:
+        rows = await cur.fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
-def list_models(results_dir: str = RESULTS_DIR, device: Optional[str] = None) -> List[str]:
-    models = set()
-    if not os.path.isdir(results_dir):
-        return []
-    for device_dir in os.listdir(results_dir):
-        device_path = os.path.join(results_dir, device_dir)
-        if not os.path.isdir(device_path) or device_dir.startswith("_"):
-            continue
-        if device and device_dir != device:
-            continue
-        for model_dir in os.listdir(device_path):
-            if os.path.isdir(os.path.join(device_path, model_dir)):
-                models.add(model_dir)
-    return sorted(models)
+async def list_models(
+    db: aiosqlite.Connection,
+    device: Optional[str] = None,
+) -> list[str]:
+    if device:
+        query = """
+            SELECT DISTINCT m.model_name
+            FROM models m
+            JOIN results r ON r.model_id = m.id
+            JOIN devices d ON r.device_id = d.id
+            WHERE d.model = ?
+            ORDER BY m.model_name
+        """
+        params: tuple = (device,)
+    else:
+        query = "SELECT DISTINCT model_name FROM models ORDER BY model_name"
+        params = ()
+
+    async with db.execute(query, params) as cur:
+        rows = await cur.fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
-def list_categories(results_dir: str = RESULTS_DIR) -> List[str]:
-    cats = set()
-    for item in load_all(results_dir):
-        if item.prompt_category:
-            cats.add(item.prompt_category)
-    return sorted(cats)
+async def list_categories(db: aiosqlite.Connection) -> list[str]:
+    async with db.execute(
+        "SELECT DISTINCT category FROM prompts WHERE category != '' ORDER BY category"
+    ) as cur:
+        rows = await cur.fetchall()
+    return [r[0] for r in rows if r[0]]
