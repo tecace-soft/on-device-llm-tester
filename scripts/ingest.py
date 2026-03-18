@@ -3,7 +3,7 @@ scripts/ingest.py — JSON → SQLite ingestion
 
 Usage:
     python scripts/ingest.py
-    python scripts/ingest.py --results-dir ./results --db-path ./data/llm_tester.db
+    python scripts/ingest.py --results-dir ./results --db-path ./api/data/llm_tester.db
 """
 
 from __future__ import annotations
@@ -16,11 +16,17 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# 프로젝트 루트의 .env 로드 (scripts/ 한 단계 위)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-DEFAULT_RESULTS_DIR = "./results"
-DEFAULT_DB_PATH = "./data/llm_tester.db"
+DEFAULT_RESULTS_DIR = os.getenv("RESULTS_DIR", str(_PROJECT_ROOT / "results"))
+DEFAULT_DB_PATH = os.getenv("DB_PATH", str(_PROJECT_ROOT / "api" / "data" / "llm_tester.db"))
 
 
 # ── DDL (sync, matches api/db.py) ────────────────────────────────────────────
@@ -333,7 +339,7 @@ def ingest(results_dir: str, db_path: str) -> IngestReport:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Ingest JSON results into SQLite DB")
     parser.add_argument("--results-dir", default=DEFAULT_RESULTS_DIR)
-    parser.add_argument("--db-path", default=os.getenv("DB_PATH", DEFAULT_DB_PATH))
+    parser.add_argument("--db-path", default=DEFAULT_DB_PATH)
     args = parser.parse_args()
 
     logger.info(f"Results dir : {args.results_dir}")

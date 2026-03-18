@@ -9,7 +9,12 @@ def init_project():
         print("❌ .env에 LOCAL_MODEL_DIR이 설정되지 않았습니다.")
         return
 
-    dirs = [local_model_dir, "./results", "./logs"]
+    dirs = [
+        local_model_dir,
+        "./results",
+        "./logs",
+        "./api/data",   # SQLite DB 저장 위치 (Phase 1.5)
+    ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
         print(f"📁 Created local directory: {d}")

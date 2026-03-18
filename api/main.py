@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 import io
 import logging
@@ -9,12 +7,14 @@ from typing import List, Optional
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../.env"))
 
+import aiosqlite
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from db import lifespan
 from loader import list_categories, list_devices, list_models, load_all
-from schemas import ApiError, ApiSuccess, CompareResult, PaginationMeta, ResultItem, SummaryStats
+from schemas import ApiError, ApiSuccess, CategorySummary, CompareResult, ModelSummary, PaginationMeta, ResultItem, SummaryStats
 from stats import compute_by_category, compute_by_model, compute_compare, compute_summary
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -22,15 +22,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-API_KEY = os.getenv("API_KEY")  # optional — skip auth if not set
+API_KEY = os.getenv("API_KEY")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
-RESULTS_DIR = os.getenv("RESULTS_DIR", "./results")
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title="On-Device LLM Tester API",
     description="Benchmark results API for on-device LLM inference",
-    version="1.0.0",
+    version="1.5.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -64,28 +64,16 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ── Common filter params ───────────────────────────────────────────────────────
-def _load(
-    device: Optional[str],
-    model: Optional[str],
-    category: Optional[str],
-    backend: Optional[str],
-    status: Optional[str],
-) -> List[ResultItem]:
-    return load_all(
-        results_dir=RESULTS_DIR,
-        device=device,
-        model=model,
-        category=category,
-        backend=backend,
-        status=status if status != "all" else None,
-    )
+# ── DB dependency ──────────────────────────────────────────────────────────────
+def _db(request: Request) -> aiosqlite.Connection:
+    return request.app.state.db
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/results", response_model=ApiSuccess[List[ResultItem]])
 async def get_results(
+    request: Request,
     device: Optional[str] = Query(None),
     model: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
@@ -94,49 +82,67 @@ async def get_results(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    rows = _load(device, model, category, backend, status)
-    total = len(rows)
-    page = rows[offset: offset + limit]
+    rows, total = await load_all(
+        _db(request),
+        device=device,
+        model=model,
+        category=category,
+        backend=backend,
+        status=status if status != "all" else None,
+        limit=limit,
+        offset=offset,
+    )
     return ApiSuccess(
-        data=page,
+        data=rows,
         meta=PaginationMeta(total=total, limit=limit, offset=offset, has_more=offset + limit < total),
     )
 
 
 @app.get("/api/results/summary", response_model=ApiSuccess[SummaryStats])
 async def get_summary(
+    request: Request,
     device: Optional[str] = Query(None),
     model: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
 ):
-    rows = _load(device, model, category, backend, status)
-    return ApiSuccess(data=compute_summary(rows))
+    stats = await compute_summary(
+        _db(request),
+        device=device,
+        model=model,
+        category=category,
+        backend=backend,
+        status=status if status != "all" else None,
+    )
+    return ApiSuccess(data=stats)
 
 
-@app.get("/api/results/by-model", response_model=ApiSuccess[list])
+@app.get("/api/results/by-model", response_model=ApiSuccess[List[ModelSummary]])
 async def get_by_model(
+    request: Request,
     device: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
 ):
-    rows = _load(device, None, category, backend, None)
-    return ApiSuccess(data=compute_by_model(rows))
+    data = await compute_by_model(_db(request), device=device, category=category, backend=backend)
+    return ApiSuccess(data=data)
 
 
-@app.get("/api/results/by-category", response_model=ApiSuccess[list])
+@app.get("/api/results/by-category", response_model=ApiSuccess[List[CategorySummary]])
 async def get_by_category(
+    request: Request,
     device: Optional[str] = Query(None),
     model: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
 ):
-    rows = _load(device, model, None, backend, None)
-    return ApiSuccess(data=compute_by_category(rows))
+    data = await compute_by_category(_db(request), device=device, model=model, backend=backend)
+    return ApiSuccess(data=data)
 
 
 @app.get("/api/results/compare", response_model=ApiSuccess[List[CompareResult]])
 async def get_compare(
+    request: Request,
     models: str = Query(..., description="Comma-separated model names, e.g. gemma3,qwen2.5"),
     device: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
@@ -144,37 +150,44 @@ async def get_compare(
     model_names = [m.strip() for m in models.split(",") if m.strip()]
     if len(model_names) < 2:
         raise HTTPException(status_code=400, detail="Provide at least 2 model names")
-
-    rows = _load(device, None, None, backend, None)
-    # filter to requested models only
-    rows = [r for r in rows if r.model_name in model_names]
-    return ApiSuccess(data=compute_compare(rows, model_names))
+    data = await compute_compare(_db(request), model_names=model_names, device=device, backend=backend)
+    return ApiSuccess(data=data)
 
 
 @app.get("/api/models", response_model=ApiSuccess[List[str]])
-async def get_models(device: Optional[str] = Query(None)):
-    return ApiSuccess(data=list_models(RESULTS_DIR, device))
+async def get_models(request: Request, device: Optional[str] = Query(None)):
+    return ApiSuccess(data=await list_models(_db(request), device=device))
 
 
 @app.get("/api/devices", response_model=ApiSuccess[List[str]])
-async def get_devices():
-    return ApiSuccess(data=list_devices(RESULTS_DIR))
+async def get_devices(request: Request):
+    return ApiSuccess(data=await list_devices(_db(request)))
 
 
 @app.get("/api/categories", response_model=ApiSuccess[List[str]])
-async def get_categories():
-    return ApiSuccess(data=list_categories(RESULTS_DIR))
+async def get_categories(request: Request):
+    return ApiSuccess(data=await list_categories(_db(request)))
 
 
 @app.get("/api/export/csv")
 async def export_csv(
+    request: Request,
     device: Optional[str] = Query(None),
     model: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
 ):
-    rows = _load(device, model, category, backend, status)
+    rows, total = await load_all(
+        _db(request),
+        device=device,
+        model=model,
+        category=category,
+        backend=backend,
+        status=status if status != "all" else None,
+        limit=10_000,
+        offset=0,
+    )
     if not rows:
         raise HTTPException(status_code=404, detail="No data matching filters")
 
@@ -195,10 +208,8 @@ async def export_csv(
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
-
     for r in rows:
-        m = r.metrics or {}
-        row = {
+        writer.writerow({
             "status": r.status,
             "prompt_id": r.prompt_id,
             "prompt_category": r.prompt_category,
@@ -226,8 +237,7 @@ async def export_csv(
             "itl_p95_ms": r.metrics.itl_p95_ms if r.metrics else "",
             "itl_p99_ms": r.metrics.itl_p99_ms if r.metrics else "",
             "timestamp": r.timestamp,
-        }
-        writer.writerow(row)
+        })
 
     buf.seek(0)
     return StreamingResponse(
