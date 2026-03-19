@@ -11,6 +11,9 @@ jobs:
   benchmark:
     runs-on: [self-hosted, llm-bench]
     timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
@@ -25,6 +28,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Verify ADB connection
+        shell: bash
         run: |
           adb devices
           adb devices | grep -w "device" || (echo "No device connected" && exit 1)
