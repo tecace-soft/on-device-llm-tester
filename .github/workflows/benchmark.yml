@@ -11,9 +11,6 @@ jobs:
   benchmark:
     runs-on: [self-hosted, llm-bench]
     timeout-minutes: 120
-    defaults:
-      run:
-        shell: bash
 
     steps:
       - name: Checkout
@@ -28,10 +25,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Verify ADB connection
-        shell: bash
         run: |
           adb devices
-          adb devices | grep -w "device" || (echo "No device connected" && exit 1)
+          $found = adb devices | Select-String -Pattern '\bdevice$'
+          if (-not $found) { Write-Error "No device connected"; exit 1 }
 
       - name: Run benchmark
         run: python scripts/runner.py
@@ -41,10 +38,10 @@ jobs:
 
       - name: Ingest results to DB
         run: |
-          python scripts/ingest.py \
-            --run-id ${{ github.run_id }} \
-            --trigger manual \
-            --commit-sha ${{ github.sha }} \
+          python scripts/ingest.py `
+            --run-id ${{ github.run_id }} `
+            --trigger manual `
+            --commit-sha ${{ github.sha }} `
             --branch ${{ github.ref_name }}
 
       - name: Upload DB artifact
@@ -52,17 +49,17 @@ jobs:
         continue-on-error: true
         with:
           name: llm-tester-db-${{ github.run_id }}
-          path: data/llm_tester.db
+          path: api/data/llm_tester.db
           retention-days: 90
 
       - name: Summary
         if: always()
         run: |
-          echo "## Benchmark Complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Run ID: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Trigger: manual (workflow_dispatch)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### DB Stats" >> $GITHUB_STEP_SUMMARY
-          python scripts/ingest.py --summary-only >> $GITHUB_STEP_SUMMARY
+          "## Benchmark Complete" >> $env:GITHUB_STEP_SUMMARY
+          "- Run ID: ${{ github.run_id }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Branch: ${{ github.ref_name }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Commit: ${{ github.sha }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Trigger: manual (workflow_dispatch)" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "### DB Stats" >> $env:GITHUB_STEP_SUMMARY
+          python scripts/ingest.py --summary-only >> $env:GITHUB_STEP_SUMMARY
