@@ -43,6 +43,7 @@ export interface ResultSuccess {
   init_time_ms: number
   metrics: Metrics
   timestamp: number
+  run_id: string | null
 }
 
 export interface ResultError {
@@ -56,6 +57,7 @@ export interface ResultError {
   error: string
   metrics: null
   timestamp: number
+  run_id: string | null
 }
 
 export type ResultItem = ResultSuccess | ResultError
@@ -133,6 +135,21 @@ export interface Filters {
   category?: string
   backend?: string
   status?: 'success' | 'error' | 'all'
+  run_id?: string
   limit: number
   offset: number
+}
+
+// ── CI/CD Run (Phase 2) ────────────────────────────────────────────────────────
+
+export interface RunItem {
+  id: number
+  run_id: string
+  trigger: string
+  commit_sha: string | null
+  branch: string | null
+  started_at: string | null
+  finished_at: string | null
+  status: 'running' | 'success' | 'error'
+  result_count: number | null
 }

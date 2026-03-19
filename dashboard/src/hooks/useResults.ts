@@ -9,6 +9,7 @@ import type {
   PaginationMeta,
   Filters,
   ApiSuccess,
+  RunItem,
 } from '@/types'
 
 interface AsyncState<T> {
@@ -125,6 +126,28 @@ export function useCategories() {
   )
 }
 
+export function useRunIds() {
+  return useAsync<string[]>(
+    async () => {
+      const res = await client.get<ApiSuccess<string[]>>('/run-ids')
+      return res.data.data
+    },
+    [],
+  )
+}
+
+export function useRuns(status?: string, limit = 20, offset = 0) {
+  return useAsync<{ items: RunItem[]; meta: PaginationMeta | null }>(
+    async () => {
+      const params: Record<string, string | number | undefined> = { limit, offset }
+      if (status && status !== 'all') params.status = status
+      const res = await client.get<ApiSuccess<RunItem[]>>('/runs', { params })
+      return { items: res.data.data, meta: res.data.meta }
+    },
+    [status, limit, offset],
+  )
+}
+
 export function useRefresh() {
   const [tick, setTick] = useState(0)
   const refresh = useCallback(() => setTick((t) => t + 1), [])
@@ -140,6 +163,7 @@ function buildParams(filters: Partial<Filters>): Record<string, string | number 
   if (filters.category) p.category = filters.category
   if (filters.backend) p.backend = filters.backend
   if (filters.status && filters.status !== 'all') p.status = filters.status
+  if (filters.run_id) p.run_id = filters.run_id
   if ('limit' in filters && filters.limit !== undefined) p.limit = filters.limit
   if ('offset' in filters && filters.offset !== undefined) p.offset = filters.offset
   return p

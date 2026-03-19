@@ -15,6 +15,7 @@ def _build_where(
     category: Optional[str],
     backend: Optional[str],
     status: Optional[str],
+    run_id: Optional[str] = None,
 ) -> tuple[str, list]:
     clauses: list[str] = []
     params: list = []
@@ -34,6 +35,9 @@ def _build_where(
     if status and status != "all":
         clauses.append("r.status = ?")
         params.append(status)
+    if run_id:
+        clauses.append("ru.run_id = ?")
+        params.append(run_id)
 
     where = ("AND " + " AND ".join(clauses)) if clauses else ""
     return where, params
@@ -41,17 +45,18 @@ def _build_where(
 
 _JOINS = """
     FROM results r
-    JOIN devices d ON r.device_id = d.id
-    JOIN models  m ON r.model_id  = m.id
-    JOIN prompts p ON r.prompt_id = p.id
+    JOIN devices d  ON r.device_id = d.id
+    JOIN models  m  ON r.model_id  = m.id
+    JOIN prompts p  ON r.prompt_id = p.id
+    LEFT JOIN runs ru ON r.run_id  = ru.id
     WHERE 1=1
 """
 
 _SUMMARY_SELECT = """
     SELECT
-        COUNT(*)                                            AS total,
-        SUM(CASE WHEN r.status='success' THEN 1 ELSE 0 END) AS success,
-        SUM(CASE WHEN r.status='error'   THEN 1 ELSE 0 END) AS errors,
+        COUNT(*)                                              AS total,
+        SUM(CASE WHEN r.status='success' THEN 1 ELSE 0 END)  AS success,
+        SUM(CASE WHEN r.status='error'   THEN 1 ELSE 0 END)  AS errors,
         AVG(CASE WHEN r.status='success' THEN r.latency_ms  END) AS avg_latency,
         MIN(CASE WHEN r.status='success' THEN r.latency_ms  END) AS min_latency,
         MAX(CASE WHEN r.status='success' THEN r.latency_ms  END) AS max_latency,
@@ -71,7 +76,6 @@ async def _percentile(
     where: str,
     params: list,
 ) -> Optional[float]:
-    """SQLite has no native percentile — use OFFSET trick."""
     count_q = f"SELECT COUNT(*) {_JOINS} {where} AND r.status='success' AND r.latency_ms IS NOT NULL"
     async with db.execute(count_q, params) as cur:
         row = await cur.fetchone()
@@ -144,8 +148,9 @@ async def compute_summary(
     category: Optional[str] = None,
     backend: Optional[str] = None,
     status: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> SummaryStats:
-    where, params = _build_where(device, model, category, backend, status)
+    where, params = _build_where(device, model, category, backend, status, run_id)
     return await _build_summary(db, where, params)
 
 
@@ -155,7 +160,6 @@ async def compute_by_model(
     category: Optional[str] = None,
     backend: Optional[str] = None,
 ) -> list[ModelSummary]:
-    # Fetch distinct model names matching filters
     where, params = _build_where(device, None, category, backend, None)
     q = f"SELECT DISTINCT m.model_name {_JOINS} {where} ORDER BY m.model_name"
     async with db.execute(q, params) as cur:

@@ -13,8 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from db import lifespan
-from loader import list_categories, list_devices, list_models, load_all
-from schemas import ApiError, ApiSuccess, CategorySummary, CompareResult, ModelSummary, PaginationMeta, ResultItem, SummaryStats
+from loader import list_categories, list_devices, list_models, list_runs, load_all
+from schemas import (
+    ApiError, ApiSuccess, CategorySummary, CompareResult, ModelSummary,
+    PaginationMeta, ResultItem, RunItem, SummaryStats,
+)
 from stats import compute_by_category, compute_by_model, compute_compare, compute_summary
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -29,7 +32,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",
 app = FastAPI(
     title="On-Device LLM Tester API",
     description="Benchmark results API for on-device LLM inference",
-    version="1.5.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -69,7 +72,7 @@ def _db(request: Request) -> aiosqlite.Connection:
     return request.app.state.db
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────────────
+# ── /api/results ───────────────────────────────────────────────────────────────
 
 @app.get("/api/results", response_model=ApiSuccess[List[ResultItem]])
 async def get_results(
@@ -79,6 +82,7 @@ async def get_results(
     category: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
     status: Optional[str] = Query(None, description="success | error | all"),
+    run_id: Optional[str] = Query(None, description="Filter by CI run_id"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -89,6 +93,7 @@ async def get_results(
         category=category,
         backend=backend,
         status=status if status != "all" else None,
+        run_id=run_id,
         limit=limit,
         offset=offset,
     )
@@ -143,7 +148,7 @@ async def get_by_category(
 @app.get("/api/results/compare", response_model=ApiSuccess[List[CompareResult]])
 async def get_compare(
     request: Request,
-    models: str = Query(..., description="Comma-separated model names, e.g. gemma3,qwen2.5"),
+    models: str = Query(..., description="Comma-separated model names"),
     device: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
 ):
@@ -153,6 +158,110 @@ async def get_compare(
     data = await compute_compare(_db(request), model_names=model_names, device=device, backend=backend)
     return ApiSuccess(data=data)
 
+
+# ── /api/runs ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/runs", response_model=ApiSuccess[List[RunItem]])
+async def get_runs(
+    request: Request,
+    status: Optional[str] = Query(None, description="success | error | running | all"),
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    db = _db(request)
+
+    clauses: list[str] = []
+    params: list = []
+    if status and status != "all":
+        clauses.append("r.status = ?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    async with db.execute(f"SELECT COUNT(*) FROM runs r {where}", params) as cur:
+        row = await cur.fetchone()
+        total = row[0] if row else 0
+
+    query = f"""
+        SELECT
+            r.id, r.run_id, r.trigger, r.commit_sha, r.branch,
+            r.started_at, r.finished_at, r.status,
+            COUNT(res.id) AS result_count
+        FROM runs r
+        LEFT JOIN results res ON res.run_id = r.id
+        {where}
+        GROUP BY r.id
+        ORDER BY r.id DESC
+        LIMIT ? OFFSET ?
+    """
+    async with db.execute(query, params + [limit, offset]) as cur:
+        rows = await cur.fetchall()
+
+    items = [
+        RunItem(
+            id=row["id"],
+            run_id=row["run_id"],
+            trigger=row["trigger"],
+            commit_sha=row["commit_sha"],
+            branch=row["branch"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            status=row["status"],
+            result_count=row["result_count"],
+        )
+        for row in rows
+    ]
+    return ApiSuccess(
+        data=items,
+        meta=PaginationMeta(total=total, limit=limit, offset=offset, has_more=offset + limit < total),
+    )
+
+
+@app.get("/api/runs/{run_id}", response_model=ApiSuccess[RunItem])
+async def get_run(request: Request, run_id: str):
+    db = _db(request)
+    async with db.execute("""
+        SELECT
+            r.id, r.run_id, r.trigger, r.commit_sha, r.branch,
+            r.started_at, r.finished_at, r.status,
+            COUNT(res.id) AS result_count
+        FROM runs r
+        LEFT JOIN results res ON res.run_id = r.id
+        WHERE r.run_id = ?
+        GROUP BY r.id
+    """, (run_id,)) as cur:
+        row = await cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    return ApiSuccess(data=RunItem(
+        id=row["id"],
+        run_id=row["run_id"],
+        trigger=row["trigger"],
+        commit_sha=row["commit_sha"],
+        branch=row["branch"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        status=row["status"],
+        result_count=row["result_count"],
+    ))
+
+
+@app.get("/api/runs/{run_id}/summary", response_model=ApiSuccess[SummaryStats])
+async def get_run_summary(request: Request, run_id: str):
+    db = _db(request)
+
+    # Verify run exists
+    async with db.execute("SELECT id FROM runs WHERE run_id = ?", (run_id,)) as cur:
+        row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    stats = await compute_summary(_db(request), run_id=run_id)
+    return ApiSuccess(data=stats)
+
+
+# ── /api/models, /api/devices, /api/categories, /api/runs-list ────────────────
 
 @app.get("/api/models", response_model=ApiSuccess[List[str]])
 async def get_models(request: Request, device: Optional[str] = Query(None)):
@@ -169,6 +278,14 @@ async def get_categories(request: Request):
     return ApiSuccess(data=await list_categories(_db(request)))
 
 
+@app.get("/api/run-ids", response_model=ApiSuccess[List[str]])
+async def get_run_ids(request: Request):
+    """Lightweight list of run_ids for filter dropdowns."""
+    return ApiSuccess(data=await list_runs(_db(request)))
+
+
+# ── /api/export/csv ───────────────────────────────────────────────────────────
+
 @app.get("/api/export/csv")
 async def export_csv(
     request: Request,
@@ -177,6 +294,7 @@ async def export_csv(
     category: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    run_id: Optional[str] = Query(None),
 ):
     rows, total = await load_all(
         _db(request),
@@ -185,6 +303,7 @@ async def export_csv(
         category=category,
         backend=backend,
         status=status if status != "all" else None,
+        run_id=run_id,
         limit=10_000,
         offset=0,
     )
@@ -202,13 +321,14 @@ async def export_csv(
         "prefill_tps", "decode_tps",
         "peak_java_memory_mb", "peak_native_memory_mb",
         "itl_p50_ms", "itl_p95_ms", "itl_p99_ms",
-        "timestamp",
+        "timestamp", "run_id",
     ]
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for r in rows:
+        m = r.metrics or {}
         writer.writerow({
             "status": r.status,
             "prompt_id": r.prompt_id,
@@ -224,35 +344,25 @@ async def export_csv(
             "response": r.response,
             "latency_ms": r.latency_ms,
             "init_time_ms": r.init_time_ms,
-            "ttft_ms": r.metrics.ttft_ms if r.metrics else "",
-            "prefill_time_ms": r.metrics.prefill_time_ms if r.metrics else "",
-            "decode_time_ms": r.metrics.decode_time_ms if r.metrics else "",
-            "input_token_count": r.metrics.input_token_count if r.metrics else "",
-            "output_token_count": r.metrics.output_token_count if r.metrics else "",
-            "prefill_tps": r.metrics.prefill_tps if r.metrics else "",
-            "decode_tps": r.metrics.decode_tps if r.metrics else "",
-            "peak_java_memory_mb": r.metrics.peak_java_memory_mb if r.metrics else "",
-            "peak_native_memory_mb": r.metrics.peak_native_memory_mb if r.metrics else "",
-            "itl_p50_ms": r.metrics.itl_p50_ms if r.metrics else "",
-            "itl_p95_ms": r.metrics.itl_p95_ms if r.metrics else "",
-            "itl_p99_ms": r.metrics.itl_p99_ms if r.metrics else "",
+            "ttft_ms": r.metrics.ttft_ms if r.metrics else None,
+            "prefill_time_ms": r.metrics.prefill_time_ms if r.metrics else None,
+            "decode_time_ms": r.metrics.decode_time_ms if r.metrics else None,
+            "input_token_count": r.metrics.input_token_count if r.metrics else None,
+            "output_token_count": r.metrics.output_token_count if r.metrics else None,
+            "prefill_tps": r.metrics.prefill_tps if r.metrics else None,
+            "decode_tps": r.metrics.decode_tps if r.metrics else None,
+            "peak_java_memory_mb": r.metrics.peak_java_memory_mb if r.metrics else None,
+            "peak_native_memory_mb": r.metrics.peak_native_memory_mb if r.metrics else None,
+            "itl_p50_ms": r.metrics.itl_p50_ms if r.metrics else None,
+            "itl_p95_ms": r.metrics.itl_p95_ms if r.metrics else None,
+            "itl_p99_ms": r.metrics.itl_p99_ms if r.metrics else None,
             "timestamp": r.timestamp,
+            "run_id": r.run_id,
         })
 
     buf.seek(0)
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=results_export.csv"},
+        headers={"Content-Disposition": "attachment; filename=llm_results.csv"},
     )
-
-
-# ── Health check ───────────────────────────────────────────────────────────────
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

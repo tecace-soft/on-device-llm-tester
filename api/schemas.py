@@ -70,6 +70,7 @@ class ResultItem(BaseModel):
     metrics: Optional[Metrics] = None
     error: Optional[str] = None
     timestamp: Optional[Any] = None
+    run_id: Optional[str] = None
 
 
 # ── Summary / aggregate shapes ─────────────────────────────────────────────────
@@ -112,3 +113,17 @@ class CompareResult(BaseModel):
     model_name: str
     stats: SummaryStats
     by_category: List[CategorySummary]
+
+
+# ── CI/CD Run shapes (Phase 2) ─────────────────────────────────────────────────
+
+class RunItem(BaseModel):
+    id: int
+    run_id: str
+    trigger: str
+    commit_sha: Optional[str] = None
+    branch: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    status: str
+    result_count: Optional[int] = None

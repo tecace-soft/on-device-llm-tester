@@ -18,6 +18,7 @@ def _build_where(
     category: Optional[str],
     backend: Optional[str],
     status: Optional[str],
+    run_id: Optional[str] = None,
 ) -> tuple[str, list]:
     clauses: list[str] = []
     params: list = []
@@ -37,6 +38,9 @@ def _build_where(
     if status and status != "all":
         clauses.append("r.status = ?")
         params.append(status)
+    if run_id:
+        clauses.append("ru.run_id = ?")
+        params.append(run_id)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
@@ -76,11 +80,13 @@ _SELECT = """
         r.peak_native_memory_mb,
         r.itl_p50_ms,
         r.itl_p95_ms,
-        r.itl_p99_ms
+        r.itl_p99_ms,
+        ru.run_id           AS ci_run_id
     FROM results r
-    JOIN devices d ON r.device_id = d.id
-    JOIN models  m ON r.model_id  = m.id
-    JOIN prompts p ON r.prompt_id = p.id
+    JOIN devices d  ON r.device_id = d.id
+    JOIN models  m  ON r.model_id  = m.id
+    JOIN prompts p  ON r.prompt_id = p.id
+    LEFT JOIN runs ru ON r.run_id  = ru.id
 """
 
 
@@ -130,6 +136,7 @@ def _row_to_item(row: aiosqlite.Row) -> ResultItem:
         metrics=metrics,
         error=row["error"],
         timestamp=row["timestamp"],
+        run_id=row["ci_run_id"],
     )
 
 
@@ -142,12 +149,20 @@ async def load_all(
     category: Optional[str] = None,
     backend: Optional[str] = None,
     status: Optional[str] = None,
+    run_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[ResultItem], int]:
-    where, params = _build_where(device, model, category, backend, status)
+    where, params = _build_where(device, model, category, backend, status, run_id)
 
-    count_query = f"SELECT COUNT(*) FROM results r JOIN devices d ON r.device_id = d.id JOIN models m ON r.model_id = m.id JOIN prompts p ON r.prompt_id = p.id {where}"
+    count_query = f"""
+        SELECT COUNT(*) FROM results r
+        JOIN devices d  ON r.device_id = d.id
+        JOIN models  m  ON r.model_id  = m.id
+        JOIN prompts p  ON r.prompt_id = p.id
+        LEFT JOIN runs ru ON r.run_id  = ru.id
+        {where}
+    """
     async with db.execute(count_query, params) as cur:
         row = await cur.fetchone()
         total = row[0] if row else 0
@@ -191,6 +206,15 @@ async def list_models(
 async def list_categories(db: aiosqlite.Connection) -> list[str]:
     async with db.execute(
         "SELECT DISTINCT category FROM prompts WHERE category != '' ORDER BY category"
+    ) as cur:
+        rows = await cur.fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
+async def list_runs(db: aiosqlite.Connection) -> list[str]:
+    """Return distinct run_ids ordered by most recent first."""
+    async with db.execute(
+        "SELECT run_id FROM runs ORDER BY id DESC"
     ) as cur:
         rows = await cur.fetchall()
     return [r[0] for r in rows if r[0]]

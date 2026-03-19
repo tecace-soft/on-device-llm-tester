@@ -1,0 +1,64 @@
+name: LLM Benchmark
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: llm-bench
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, llm-bench]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify ADB connection
+        run: |
+          adb devices
+          adb devices | grep -w "device" || (echo "No device connected" && exit 1)
+
+      - name: Run benchmark
+        run: python scripts/runner.py
+
+      - name: Sync results from device
+        run: python scripts/sync_results.py
+
+      - name: Ingest results to DB
+        run: |
+          python scripts/ingest.py \
+            --run-id ${{ github.run_id }} \
+            --trigger manual \
+            --commit-sha ${{ github.sha }} \
+            --branch ${{ github.ref_name }}
+
+      - name: Upload DB artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: llm-tester-db-${{ github.run_id }}
+          path: data/llm_tester.db
+          retention-days: 90
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Benchmark Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Run ID: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Trigger: manual (workflow_dispatch)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### DB Stats" >> $GITHUB_STEP_SUMMARY
+          python scripts/ingest.py --summary-only >> $GITHUB_STEP_SUMMARY
