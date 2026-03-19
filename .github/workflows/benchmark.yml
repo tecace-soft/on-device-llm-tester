@@ -31,12 +31,18 @@ jobs:
           if (-not $found) { Write-Error "No device connected"; exit 1 }
 
       - name: Run benchmark
+        env:
+          PYTHONIOENCODING: utf-8
         run: python scripts/runner.py
 
       - name: Sync results from device
+        env:
+          PYTHONIOENCODING: utf-8
         run: python scripts/sync_results.py
 
       - name: Ingest results to DB
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           python scripts/ingest.py `
             --run-id ${{ github.run_id }} `
@@ -53,6 +59,8 @@ jobs:
           retention-days: 90
 
       - name: Summary
+        env:
+          PYTHONIOENCODING: utf-8
         if: always()
         run: |
           "## Benchmark Complete" >> $env:GITHUB_STEP_SUMMARY
