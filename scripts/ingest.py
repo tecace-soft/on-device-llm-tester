@@ -262,6 +262,9 @@ def parse_result_file(path: Path) -> dict | None:
     if status not in ("success", "error"):
         status = "error"
 
+    # ── Metrics: nested "metrics" dict 우선, flat fallback (구버전 PoC 호환) ──
+    met = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+
     return {
         "manufacturer":    manufacturer,
         "device_model":    device_model,
@@ -283,18 +286,18 @@ def parse_result_file(path: Path) -> dict | None:
         "init_time_ms":          _float(data.get("init_time_ms")),
         "response":              _str(data.get("response")),
         "error":                 data.get("error"),
-        "ttft_ms":               _float(data.get("ttft_ms")),
-        "prefill_time_ms":       _float(data.get("prefill_time_ms")),
-        "decode_time_ms":        _float(data.get("decode_time_ms")),
-        "input_token_count":     _int(data.get("input_token_count")),
-        "output_token_count":    _int(data.get("output_token_count")),
-        "prefill_tps":           _float(data.get("prefill_tps")),
-        "decode_tps":            _float(data.get("decode_tps")),
-        "peak_java_memory_mb":   _float(data.get("peak_java_memory_mb")),
-        "peak_native_memory_mb": _float(data.get("peak_native_memory_mb")),
-        "itl_p50_ms":            _float(data.get("itl_p50_ms")),
-        "itl_p95_ms":            _float(data.get("itl_p95_ms")),
-        "itl_p99_ms":            _float(data.get("itl_p99_ms")),
+        "ttft_ms":               _float(met.get("ttft_ms")               or data.get("ttft_ms")),
+        "prefill_time_ms":       _float(met.get("prefill_time_ms")       or data.get("prefill_time_ms")),
+        "decode_time_ms":        _float(met.get("decode_time_ms")        or data.get("decode_time_ms")),
+        "input_token_count":     _int(met.get("input_token_count")       or data.get("input_token_count")),
+        "output_token_count":    _int(met.get("output_token_count")      or data.get("output_token_count")),
+        "prefill_tps":           _float(met.get("prefill_tps")           or data.get("prefill_tps")),
+        "decode_tps":            _float(met.get("decode_tps")            or data.get("decode_tps")),
+        "peak_java_memory_mb":   _float(met.get("peak_java_memory_mb")   or data.get("peak_java_memory_mb")),
+        "peak_native_memory_mb": _float(met.get("peak_native_memory_mb") or data.get("peak_native_memory_mb")),
+        "itl_p50_ms":            _float(met.get("itl_p50_ms")            or data.get("itl_p50_ms")),
+        "itl_p95_ms":            _float(met.get("itl_p95_ms")            or data.get("itl_p95_ms")),
+        "itl_p99_ms":            _float(met.get("itl_p99_ms")            or data.get("itl_p99_ms")),
         "timestamp":             _int(data.get("timestamp")),
     }
 
