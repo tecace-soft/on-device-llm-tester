@@ -19,10 +19,18 @@ def sanitize_dirname(name: str) -> str:
     return name.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_")
 
 
-def read_remote_file(file_name: str) -> Optional[str]:
+def _adb_prefix(serial: str | None = None) -> str:
+    """ADB command prefix with optional -s serial."""
+    if serial:
+        return f"adb -s {serial}"
+    return "adb"
+
+
+def read_remote_file(file_name: str, serial: str | None = None) -> Optional[str]:
     """Read a file from the app sandbox via ADB run-as."""
     remote_path = f"{REMOTE_DIR}/{file_name}"
-    cat_cmd = f'adb shell "run-as {PACKAGE_NAME} cat {remote_path}"'
+    prefix = _adb_prefix(serial)
+    cat_cmd = f'{prefix} shell "run-as {PACKAGE_NAME} cat {remote_path}"'
     content = subprocess.run(cat_cmd, shell=True, capture_output=True)
 
     if content.returncode != 0 or not content.stdout:
@@ -31,8 +39,9 @@ def read_remote_file(file_name: str) -> Optional[str]:
     return content.stdout.decode("utf-8", errors="replace")
 
 
-def sync_results() -> None:
-    list_cmd = f'adb shell "run-as {PACKAGE_NAME} ls {REMOTE_DIR}"'
+def sync_results(serial: str | None = None) -> None:
+    prefix = _adb_prefix(serial)
+    list_cmd = f'{prefix} shell "run-as {PACKAGE_NAME} ls {REMOTE_DIR}"'
     res = subprocess.run(list_cmd, shell=True, capture_output=True)
 
     file_list_raw: str = res.stdout.decode("utf-8", errors="ignore").strip()
@@ -52,7 +61,7 @@ def sync_results() -> None:
         if not file_name.endswith(".json"):
             continue
 
-        decoded_text = read_remote_file(file_name)
+        decoded_text = read_remote_file(file_name, serial=serial)
         if decoded_text is None:
             logger.error("%s read failed (no data)", file_name)
             errors += 1
@@ -95,5 +104,29 @@ def sync_results() -> None:
     logger.info("Results location: %s", os.path.abspath(LOCAL_DIR))
 
 
+def sync_all_devices() -> None:
+    """모든 연결 디바이스에서 결과 수집."""
+    from device_discovery import discover_devices
+
+    devices = discover_devices()
+    if not devices:
+        logger.info("No devices connected.")
+        return
+
+    for d in devices:
+        logger.info("=== Syncing from %s (%s) ===", d["serial"], d["model"])
+        sync_results(serial=d["serial"])
+
+
 if __name__ == "__main__":
-    sync_results()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Sync benchmark results from device(s)")
+    parser.add_argument("--serial", "-s", help="Target device serial")
+    parser.add_argument("--all-devices", action="store_true", help="Sync from all connected devices")
+    args = parser.parse_args()
+
+    if args.all_devices:
+        sync_all_devices()
+    else:
+        sync_results(serial=args.serial)

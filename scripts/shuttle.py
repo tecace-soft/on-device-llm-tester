@@ -1,53 +1,93 @@
 import os
 import subprocess
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def sync_models_to_phone():
-    """
-    LOCAL_MODEL_DIR 내의 모든 파일을 PHONE_MODEL_PATH로 동기화합니다.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def sync_models_to_phone(serial: str | None = None) -> bool:
+    """Sync local models to a single device.
+
+    Args:
+        serial: ADB device serial. None = default ADB device.
+
+    Returns:
+        True if sync succeeded.
     """
     local_dir = os.getenv("LOCAL_MODEL_DIR")
     remote_dir = os.getenv("PHONE_MODEL_PATH")
 
-    # 1. 로컬 폴더 존재 확인
     if not os.path.exists(local_dir):
-        print(f"❌ Error: Local directory '{local_dir}' not found.")
-        return
+        logger.error("Local directory '%s' not found.", local_dir)
+        return False
 
-    # 2. 로컬에 파일이 있는지 확인
     local_files = os.listdir(local_dir)
     if not local_files:
-        print(f"⚠️ Warning: No files found in '{local_dir}'. Nothing to sync.")
-        return
+        logger.warning("No files found in '%s'. Nothing to sync.", local_dir)
+        return False
 
-    print(f"📂 Found {len(local_files)} files in {local_dir}. Starting sync...")
+    adb = ["adb"]
+    if serial:
+        adb.extend(["-s", serial])
 
-    # 3. 폰 내 목적지 폴더 생성
-    subprocess.run(["adb", "shell", f"mkdir -p {remote_dir}"], check=True)
+    device_label = serial or "default"
+    logger.info("[%s] Found %d files in %s. Starting sync...", device_label, len(local_files), local_dir)
 
-    # 4. 폴더 통째로 Push
-    # 폴더 경로 끝에 '/.'를 붙이면 폴더 자체가 아닌 '내용물'만 복사됩니다.
-    print(f"🚀 Syncing models to {remote_dir}...")
+    subprocess.run([*adb, "shell", f"mkdir -p {remote_dir}"], check=True)
+
     push_result = subprocess.run(
-        ["adb", "push", f"{local_dir}/.", remote_dir], 
-        capture_output=True, 
-        text=True
+        [*adb, "push", f"{local_dir}/.", remote_dir],
+        capture_output=True,
+        text=True,
     )
 
     if push_result.returncode == 0:
-        print("✅ Sync complete.")
-        # 5. 폰에 있는 파일 리스트 출력 (검증)
-        print("\n📱 [Current Models on Phone]")
+        logger.info("[%s] Sync complete.", device_label)
         verify_result = subprocess.run(
-            ["adb", "shell", f"ls -1 {remote_dir}"], 
-            capture_output=True, 
-            text=True
+            [*adb, "shell", f"ls -1 {remote_dir}"],
+            capture_output=True,
+            text=True,
         )
-        print(verify_result.stdout)
+        logger.info("[%s] Models on phone:\n%s", device_label, verify_result.stdout.strip())
+        return True
     else:
-        print(f"❌ Sync failed: {push_result.stderr}")
+        logger.error("[%s] Sync failed: %s", device_label, push_result.stderr)
+        return False
+
+
+def sync_all_devices() -> None:
+    """Sync models to all connected devices (순차 push — 대역폭 경합 방지)."""
+    from device_discovery import discover_devices
+
+    devices = discover_devices()
+    if not devices:
+        logger.info("No devices connected.")
+        return
+
+    logger.info("Syncing models to %d device(s)...", len(devices))
+    for d in devices:
+        logger.info("=== Pushing to %s (%s) ===", d["serial"], d["model"])
+        success = sync_models_to_phone(serial=d["serial"])
+        if not success:
+            logger.warning("Failed to sync to %s (%s) — continuing with next device", d["serial"], d["model"])
+
 
 if __name__ == "__main__":
-    sync_models_to_phone()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Sync model files to device(s)")
+    parser.add_argument("--serial", "-s", help="Target device serial")
+    parser.add_argument("--all-devices", action="store_true", help="Sync to all connected devices")
+    args = parser.parse_args()
+
+    if args.all_devices:
+        sync_all_devices()
+    else:
+        sync_models_to_phone(serial=args.serial)
