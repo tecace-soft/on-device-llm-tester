@@ -25,10 +25,9 @@ jobs:
   benchmark:
     runs-on: [self-hosted, llm-bench]
     timeout-minutes: 240
-    # FIX(L): Default shell explicitly set for Windows Runner
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
 
     steps:
       - name: Checkout
@@ -95,7 +94,6 @@ jobs:
             --commit-sha ${{ github.sha }} `
             --branch ${{ github.ref_name }}
 
-      # FIX(M): Flush WAL to main DB before uploading artifact.
       - name: Flush WAL checkpoint
         if: always()
         run: |
