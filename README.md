@@ -1,8 +1,8 @@
 # On-device LLM Inference Test Automation
 
-> **Project Status:** Phase 2 — CI/CD Pipeline ✅
+> **Project Status:** Phase 3 — Multi-Device Support ✅
 
-Android 기기에서 구동되는 LLM(MediaPipe 기반)의 추론 성능 및 결과 품질을 자동으로 벤치마킹하는 파이프라인입니다. GitHub Actions self-hosted runner를 통해 ADB 연결된 실물 기기에서 CI 실행이 가능합니다.
+Android 기기에서 구동되는 LLM(MediaPipe 기반)의 추론 성능 및 결과 품질을 자동으로 벤치마킹하는 파이프라인입니다. GitHub Actions self-hosted runner를 통해 ADB 연결된 복수의 실물 기기에서 CI 실행이 가능합니다.
 
 ---
 
@@ -13,7 +13,7 @@ Android 기기에서 구동되는 LLM(MediaPipe 기반)의 추론 성능 및 결
 | Python | 3.10+ |
 | Node.js | 18+ (Dashboard) |
 | ADB | Android SDK Platform-Tools (PATH 등록 필수) |
-| Android 기기 | 개발자 옵션 활성화 + USB 디버깅 허용 |
+| Android 기기 | 개발자 옵션 활성화 + USB 디버깅 허용 (1대 이상) |
 
 - [ADB Platform-Tools 다운로드](https://developer.android.com/studio/releases/platform-tools)
 
@@ -67,43 +67,50 @@ python scripts/setup.py
 on-device-llm-tester/
 ├── .github/
 │   └── workflows/
-│       └── benchmark.yml       # CI/CD 워크플로우 (Phase 2)
+│       └── benchmark.yml          # CI/CD 워크플로우 (멀티디바이스 지원)
 │
-├── android/                    # Android app (com.tecace.llmtester)
+├── android/                       # Android app (com.tecace.llmtester)
 │
-├── api/                        # FastAPI backend (:8000)
-│   ├── main.py                 # 엔드포인트 + CORS + auth
-│   ├── db.py                   # SQLite 연결 + 스키마 초기화
-│   ├── loader.py               # SQL SELECT 기반 데이터 로드
-│   ├── stats.py                # SQL 집계 (summary, by-model, compare)
-│   ├── schemas.py              # Pydantic 스키마
+├── api/                           # FastAPI backend (:8000)
+│   ├── main.py                    # 엔드포인트 + CORS + auth
+│   ├── db.py                      # SQLite 연결 + 스키마 초기화
+│   ├── loader.py                  # SQL SELECT 기반 데이터 로드
+│   ├── stats.py                   # SQL 집계 (summary, compare, device-compare)
+│   ├── schemas.py                 # Pydantic 스키마
 │   ├── requirements.txt
 │   └── data/
-│       └── llm_tester.db       # SQLite DB (gitignore됨)
+│       └── llm_tester.db          # SQLite DB (gitignore됨)
 │
-├── dashboard/                  # React + Vite + TypeScript (:5173)
+├── dashboard/                     # React + Vite + TypeScript (:5173)
 │   └── src/
 │       ├── pages/
 │       │   ├── Overview.tsx
 │       │   ├── Performance.tsx
 │       │   ├── Compare.tsx
+│       │   ├── DeviceCompare.tsx   # 디바이스 간 비교 (Phase 3)
 │       │   ├── Responses.tsx
 │       │   ├── RawData.tsx
-│       │   └── RunHistory.tsx  # CI 실행 이력 (Phase 2)
+│       │   └── RunHistory.tsx
+│       ├── hooks/
+│       │   ├── useResults.ts
+│       │   └── useDeviceCompare.ts # Phase 3
 │       └── ...
 │
 ├── scripts/
-│   ├── setup.py                # 초기 폴더 구조 생성
-│   ├── shuttle.py              # 모델 파일 → 기기 전송
-│   ├── runner.py               # ADB 추론 실행 + Smart Polling
-│   ├── sync_results.py         # 기기 → PC 결과 수집
-│   └── ingest.py               # JSON → SQLite 적재
+│   ├── setup.py                   # 초기 폴더 구조 생성
+│   ├── device_discovery.py        # ADB 디바이스 검색 + thermal guard (Phase 3)
+│   ├── shuttle.py                 # 모델 파일 → 기기 전송 (멀티디바이스 지원)
+│   ├── runner.py                  # ADB 추론 실행 (멀티디바이스 + 병렬 지원)
+│   ├── sync_results.py            # 기기 → PC 결과 수집 (멀티디바이스 지원)
+│   └── ingest.py                  # JSON → SQLite 적재
 │
-├── results/                    # Raw JSON 원본 (gitignore됨)
-├── models/                     # 모델 파일 (gitignore됨)
-├── report.py                   # CLI 리포트 생성
-├── test_config.json            # 테스트 설정 (모델, 프롬프트)
-└── .env                        # 환경변수 (gitignore됨)
+├── results/                       # Raw JSON 원본 (gitignore됨)
+│   ├── SM-S931U/                  # 디바이스별 디렉토리
+│   └── SM-S926U/
+├── logs/                          # 병렬 모드 디바이스별 로그 (gitignore됨)
+├── models/                        # 모델 파일 (gitignore됨)
+├── test_config.json               # 테스트 설정 (모델, 프롬프트)
+└── .env                           # 환경변수 (gitignore됨)
 ```
 
 ---
@@ -131,7 +138,8 @@ dashboard/ (React :5173)
 ### 4.1 결과 수집
 
 ```bash
-python scripts/sync_results.py
+python scripts/sync_results.py          # 단일 디바이스
+python scripts/sync_results.py --all-devices  # 모든 디바이스
 ```
 
 ### 4.2 DB 적재
@@ -169,13 +177,14 @@ http://localhost:5173
 | GET | `/api/results/by-model` | 모델별 통계 |
 | GET | `/api/results/by-category` | 카테고리별 통계 |
 | GET | `/api/results/compare` | 모델 간 비교 |
+| GET | `/api/results/compare-devices` | **디바이스 간 비교 (Phase 3)** |
 | GET | `/api/models` | 모델 목록 |
 | GET | `/api/devices` | 디바이스 목록 |
 | GET | `/api/categories` | 카테고리 목록 |
 | GET | `/api/export/csv` | CSV 다운로드 |
-| GET | `/api/runs` | CI 실행 이력 목록 (Phase 2) |
-| GET | `/api/runs/{run_id}` | 특정 run 상세 (Phase 2) |
-| GET | `/api/runs/{run_id}/summary` | 특정 run 집계 통계 (Phase 2) |
+| GET | `/api/runs` | CI 실행 이력 목록 |
+| GET | `/api/runs/{run_id}` | 특정 run 상세 |
+| GET | `/api/runs/{run_id}/summary` | 특정 run 집계 통계 |
 | GET | `/api/run-ids` | run_id 목록 (드롭다운용) |
 | GET | `/health` | 헬스체크 |
 
@@ -183,7 +192,7 @@ http://localhost:5173
 
 ---
 
-## 6. CI/CD (Phase 2)
+## 6. CI/CD
 
 GitHub Actions self-hosted runner를 통해 ADB 연결된 물리 기기에서 벤치마크를 자동 실행합니다.
 
@@ -203,38 +212,103 @@ sudo ./svc.sh install && sudo ./svc.sh start
 
 GitHub UI → Actions 탭 → **LLM Benchmark** → **Run workflow**
 
-또는 CLI:
+워크플로우 입력 옵션:
+
+| 입력 | 기본값 | 설명 |
+|------|--------|------|
+| `device_mode` | `all` | `all`: 연결된 모든 디바이스 / `single`: 첫 번째 디바이스만 |
+| `parallel` | `false` | `true`: 디바이스 병렬 실행 (속도 우선, 결과 노이즈 가능) |
+
+CLI:
 ```bash
 gh workflow run benchmark.yml
+gh workflow run benchmark.yml -f device_mode=all -f parallel=true
 ```
 
 ### 6.3 파이프라인 흐름
 
 ```
-GitHub UI "Run workflow"
+GitHub UI "Run workflow" (device_mode, parallel 선택)
       │
       ▼
 Self-hosted Runner (ADB 연결된 개발 PC)
-      ├─ runner.py         (ADB → 폰에서 추론 실행)
-      ├─ sync_results.py   (폰 → PC로 JSON pull)
-      ├─ ingest.py         (JSON → SQLite + runs 테이블 기록)
-      └─ upload-artifact   (.db 파일 → GitHub Artifact, 90일 보존)
+      ├─ discover devices        (디바이스 수 확인)
+      ├─ shuttle.py --all-devices (모델 사전 배포)
+      ├─ runner.py --all-devices  (순차 또는 병렬 벤치마크)
+      ├─ sync_results.py          (결과 수집)
+      ├─ ingest.py                (JSON → SQLite + runs 기록)
+      ├─ upload-artifact          (.db → GitHub Artifact, 90일 보존)
+      └─ upload logs              (병렬 모드 시 디바이스별 로그)
 ```
 
 ### 6.4 설정 변경
 
 `test_config.json` 수정 → commit & push → Run workflow 실행.
 
-파라미터(모델, 프롬프트, backend, max_tokens)는 모두 `test_config.json`에서 관리됩니다.
+---
 
-### 6.5 Run History 확인
+## 7. Multi-Device 사용법 (Phase 3)
 
-Dashboard → **Run History** 페이지에서 CI 실행 이력 확인.  
-행 클릭 시 해당 run의 results만 필터링된 Raw Data 페이지로 이동.
+### 7.1 로컬 실행
+
+```bash
+# 1. 연결된 디바이스 확인
+adb devices -l
+
+# 2. 모든 디바이스에 모델 배포 (최초 또는 모델 변경 시)
+python scripts/shuttle.py --all-devices
+
+# 3. 모든 디바이스에서 순차 벤치마크 실행
+python scripts/runner.py --all-devices
+
+# 4. 병렬 실행 (속도 우선)
+python scripts/runner.py --all-devices --parallel
+
+# 5. 특정 디바이스만 실행
+python scripts/runner.py --serial RFXXXXXXXX
+
+# 6. DB 적재
+python scripts/ingest.py
+```
+
+### 7.2 디바이스 순차 vs 병렬
+
+| 모드 | 명령 | 특징 |
+|------|------|------|
+| 순차 (기본) | `--all-devices` | 디바이스별 thermal check → 테스트 → 즉시 sync. 공정한 비교 |
+| 병렬 | `--all-devices --parallel` | subprocess로 동시 실행. 속도 빠름. 로그는 `logs/{serial}_runner.log`에 분리 |
+| 단일 | `--serial XXXX` | 특정 디바이스만 타겟 |
+| 기존 호환 | (플래그 없음) | USB에 1대 연결 시 기존과 동일 동작 |
+
+### 7.3 Thermal Guard
+
+멀티디바이스 순차 실행 시, 각 디바이스 테스트 시작 전에 배터리 온도를 체크합니다.
+
+- 임계값: 35.0°C
+- 초과 시: 30초 간격으로 최대 5분 대기
+- 5분 후에도 고온: 경고 로그 출력 후 테스트 진행
+
+### 7.4 Device Compare 대시보드
+
+Dashboard → **Device Compare** 페이지에서 디바이스 간 성능 비교 가능:
+
+- Device A / B 드롭다운으로 비교 대상 선택
+- 모델 필터 (선택)
+- KPI 비교: Avg Latency, Decode TPS, TTFT, Success Rate (최적값 녹색 강조)
+- 카테고리별 Decode TPS 그룹드 바 차트
+- 상세 테이블: 카테고리별 Latency / TPS / TTFT 나란히 비교
+
+### 7.5 API
+
+```
+GET /api/results/compare-devices?devices=SM-S931U,SM-S926U&model=gemma3-1b-it-int4.task
+```
+
+응답: 디바이스별 집계 통계 + 디바이스 메타정보 (SoC, Android 버전 등) + 카테고리별 통계
 
 ---
 
-## 7. test_config.json
+## 8. test_config.json
 
 벤치마크 설정 파일. 모델과 프롬프트를 정의합니다.
 
@@ -261,36 +335,24 @@ Dashboard → **Run History** 페이지에서 CI 실행 이력 확인.
 
 ---
 
-## 8. Troubleshooting
+## 9. Architecture Documents
 
-**`ModuleNotFoundError: No module named 'dotenv'`**
-→ 가상환경 활성화 후 `pip install python-dotenv`
-
-**`adb: command not found`**
-→ ADB 설치 후 시스템 PATH 등록 확인
-
-**`data: []` API 응답**
-→ `python scripts/ingest.py` 실행 후 서버 재시작
-
-**GPU 백엔드 설정**
-→ `LlmRunner.kt`에서 `.setPreferredBackend(LlmInference.Backend.GPU)` 설정 필요
-
-**내부 저장소 결과 직접 확인**
-```bash
-adb shell "run-as com.tecace.llmtester cat files/results/last_result.json"
-```
-
-**좀비 run (status=running 고착)**
-→ FastAPI 앱 재시작 시 24시간 이상 `running` 상태인 run을 자동으로 `error` 처리
+| 문서 | 내용 |
+|------|------|
+| `DASHBOARD_ARCHITECTURE.md` | Phase 1 Dashboard 설계 (FastAPI + React) |
+| `DB_MIGRATION_ARCHITECTURE.md` | Phase 1.5 SQLite 마이그레이션 설계 |
+| `CICD_ARCHITECTURE.md` | Phase 2 CI/CD 파이프라인 설계 |
+| `MULTIDEVICE_ARCHITECTURE.md` | Phase 3 멀티디바이스 설계 |
 
 ---
 
-## 9. Roadmap
+## 10. Roadmap
 
-| Phase | 상태 | 내용 |
+| Phase | 내용 | 상태 |
 |-------|------|------|
-| Phase 1 | ✅ 완료 | FastAPI + React Dashboard |
-| Phase 1.5 | ✅ 완료 | SQLite DB 마이그레이션 |
-| Phase 2 | ✅ 완료 | GitHub Actions CI/CD + Run History |
-| Phase 3 | 🔜 예정 | 멀티 디바이스 병렬 벤치마크 |
-| Phase 4 | 🔜 예정 | GPT API 기반 응답 품질 자동 평가 |
+| PoC | Android 앱 + ADB 파이프라인 | ✅ |
+| 1 | Dashboard (FastAPI + React) | ✅ |
+| 1.5 | SQLite DB 마이그레이션 | ✅ |
+| 2 | CI/CD (GitHub Actions) | ✅ |
+| 3 | Multi-Device 지원 | ✅ |
+| 4 | AI Quality Eval (GPT 기반) | 🔜 |

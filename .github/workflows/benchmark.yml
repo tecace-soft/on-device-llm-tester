@@ -2,6 +2,20 @@ name: LLM Benchmark
 
 on:
   workflow_dispatch:
+    inputs:
+      device_mode:
+        description: 'Device selection mode'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - single
+      parallel:
+        description: 'Run devices in parallel'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: llm-bench
@@ -10,7 +24,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: [self-hosted, llm-bench]
-    timeout-minutes: 120
+    timeout-minutes: 240
     # FIX(L): Default shell explicitly set for Windows Runner
     defaults:
       run:
@@ -28,21 +42,48 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Verify ADB connection
+      - name: Verify ADB & discover devices
+        id: discover
         run: |
-          adb devices
+          adb devices -l
           $found = adb devices | Select-String -Pattern '\bdevice$'
-          if (-not $found) { Write-Error "No device connected"; exit 1 }
+          $deviceCount = if ($found) { @($found).Count } else { 0 }
+          echo "device_count=$deviceCount" >> $env:GITHUB_OUTPUT
+          if ($deviceCount -eq 0) {
+            Write-Error "No devices connected"
+            exit 1
+          }
+          Write-Host "Found $deviceCount device(s)"
+
+      - name: Sync models to all devices
+        if: ${{ inputs.device_mode == 'all' }}
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/shuttle.py --all-devices
 
       - name: Run benchmark
         env:
           PYTHONIOENCODING: utf-8
-        run: python scripts/runner.py
+        run: |
+          if ("${{ inputs.device_mode }}" -eq "single") {
+            python scripts/runner.py
+          } elseif ("${{ inputs.parallel }}" -eq "true") {
+            python scripts/runner.py --all-devices --parallel
+          } else {
+            python scripts/runner.py --all-devices
+          }
 
-      - name: Sync results from device
+      - name: Sync results from devices
         env:
           PYTHONIOENCODING: utf-8
-        run: python scripts/sync_results.py
+        run: |
+          if ("${{ inputs.device_mode }}" -eq "single") {
+            python scripts/sync_results.py
+          } elseif ("${{ inputs.parallel }}" -eq "true") {
+            # Parallel mode: runner.py didn't sync, collect all here
+            python scripts/sync_results.py --all-devices
+          }
+          # Sequential mode: runner.py already did per-device sync — skip
 
       - name: Ingest results to DB
         env:
@@ -55,7 +96,6 @@ jobs:
             --branch ${{ github.ref_name }}
 
       # FIX(M): Flush WAL to main DB before uploading artifact.
-      # Without this, .db-wal and .db-shm are excluded from artifact → data loss on restore.
       - name: Flush WAL checkpoint
         if: always()
         run: |
@@ -79,6 +119,15 @@ jobs:
           path: api/data/llm_tester.db
           retention-days: 90
 
+      - name: Upload runner logs (parallel mode)
+        if: ${{ inputs.parallel == 'true' }}
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: runner-logs-${{ github.run_id }}
+          path: logs/*.log
+          retention-days: 30
+
       - name: Summary
         env:
           PYTHONIOENCODING: utf-8
@@ -88,7 +137,9 @@ jobs:
           "- Run ID: ${{ github.run_id }}" >> $env:GITHUB_STEP_SUMMARY
           "- Branch: ${{ github.ref_name }}" >> $env:GITHUB_STEP_SUMMARY
           "- Commit: ${{ github.sha }}" >> $env:GITHUB_STEP_SUMMARY
-          "- Trigger: manual (workflow_dispatch)" >> $env:GITHUB_STEP_SUMMARY
+          "- Devices: ${{ steps.discover.outputs.device_count }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Mode: ${{ inputs.device_mode }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Parallel: ${{ inputs.parallel }}" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
           "### DB Stats" >> $env:GITHUB_STEP_SUMMARY
           python scripts/ingest.py --summary-only >> $env:GITHUB_STEP_SUMMARY

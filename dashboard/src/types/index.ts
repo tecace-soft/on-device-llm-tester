@@ -1,4 +1,4 @@
-// ── API Response wrappers ───────────────────────────────────────────────────
+// ── API wrapper ─────────────────────────────────────────────────────────────
 
 export interface PaginationMeta {
   total: number
@@ -10,7 +10,7 @@ export interface PaginationMeta {
 export interface ApiSuccess<T> {
   status: 'ok'
   data: T
-  meta: PaginationMeta | null
+  meta?: PaginationMeta | null
 }
 
 export interface ApiError {
@@ -49,7 +49,6 @@ export interface Metrics {
 
 // ── Result ──────────────────────────────────────────────────────────────────
 
-// FIX(K): Synced with DB CHECK constraint: status IN ('success', 'error')
 export type ResultStatus = 'success' | 'error'
 
 export interface ResultItem {
@@ -70,6 +69,8 @@ export interface ResultItem {
   timestamp: number | null
   run_id: string | null
 }
+
+export type ResultSuccess = ResultItem & { status: 'success'; latency_ms: number; backend: string }
 
 // ── Summary / Aggregate ─────────────────────────────────────────────────────
 
@@ -115,7 +116,6 @@ export interface CompareResult {
 
 // ── CI/CD Run (Phase 2) ────────────────────────────────────────────────────
 
-// FIX(K): Explicit literal union synced with DB + backend schema
 export type RunStatus = 'running' | 'success' | 'error'
 
 export interface RunItem {
@@ -128,6 +128,15 @@ export interface RunItem {
   finished_at: string | null
   status: RunStatus
   result_count: number | null
+}
+
+// ── Device Compare (Phase 3) ───────────────────────────────────────────────
+
+export interface DeviceCompareResult {
+  device_model: string
+  device_info: DeviceInfo
+  stats: SummaryStats
+  by_category: CategorySummary[]
 }
 
 // ── Filters ─────────────────────────────────────────────────────────────────

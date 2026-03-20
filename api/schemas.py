@@ -127,3 +127,12 @@ class RunItem(BaseModel):
     finished_at: Optional[str] = None
     status: str
     result_count: Optional[int] = None
+
+
+# ── Device Compare shapes (Phase 3) ────────────────────────────────────────────
+
+class DeviceCompareResult(BaseModel):
+    device_model: str
+    device_info: dict
+    stats: SummaryStats
+    by_category: List[CategorySummary]

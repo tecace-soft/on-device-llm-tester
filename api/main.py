@@ -15,10 +15,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from db import lifespan
 from loader import list_categories, list_devices, list_models, list_runs, load_all
 from schemas import (
-    ApiError, ApiSuccess, CategorySummary, CompareResult, ModelSummary,
-    PaginationMeta, ResultItem, RunItem, SummaryStats,
+    ApiError, ApiSuccess, CategorySummary, CompareResult, DeviceCompareResult,
+    ModelSummary, PaginationMeta, ResultItem, RunItem, SummaryStats,
 )
-from stats import compute_by_category, compute_by_model, compute_compare, compute_summary
+from stats import (
+    compute_by_category, compute_by_model, compute_compare,
+    compute_compare_devices, compute_summary,
+)
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,7 +35,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",
 app = FastAPI(
     title="On-Device LLM Tester API",
     description="Benchmark results API for on-device LLM inference",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -45,11 +48,13 @@ app.add_middleware(
 )
 
 
-# ── Auth middleware (optional) ─────────────────────────────────────────────────
+# ── Auth middleware ────────────────────────────────────────────────────────────
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     if API_KEY and request.url.path.startswith("/api"):
-        if request.headers.get("X-API-Key") != API_KEY:
+        key = request.headers.get("x-api-key") or request.query_params.get("api_key")
+        if key != API_KEY:
             return JSONResponse(
                 status_code=401,
                 content=ApiError(error="Invalid API key").model_dump(),
@@ -57,22 +62,31 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ── Global exception handler ───────────────────────────────────────────────────
+# ── Exception handler ─────────────────────────────────────────────────────────
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled error on {request.url}: {exc}", exc_info=True)
+    logger.exception("Unhandled error: %s", exc)
     return JSONResponse(
         status_code=500,
-        content=ApiError(error="Internal error", detail=str(exc)).model_dump(),
+        content=ApiError(error="Internal server error", detail=str(exc)).model_dump(),
     )
 
 
-# ── DB dependency ──────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
 def _db(request: Request) -> aiosqlite.Connection:
     return request.app.state.db
 
 
-# ── /api/results ───────────────────────────────────────────────────────────────
+# ── /health ───────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+# ── /api/results ──────────────────────────────────────────────────────────────
 
 @app.get("/api/results", response_model=ApiSuccess[List[ResultItem]])
 async def get_results(
@@ -156,6 +170,24 @@ async def get_compare(
     if len(model_names) < 2:
         raise HTTPException(status_code=400, detail="Provide at least 2 model names")
     data = await compute_compare(_db(request), model_names=model_names, device=device, backend=backend)
+    return ApiSuccess(data=data)
+
+
+# ── /api/results/compare-devices (Phase 3) ────────────────────────────────────
+
+@app.get("/api/results/compare-devices", response_model=ApiSuccess[List[DeviceCompareResult]])
+async def get_compare_devices(
+    request: Request,
+    devices: str = Query(..., description="Comma-separated device model names (e.g. SM-S931U,SM-S926U)"),
+    model: Optional[str] = Query(None, description="Model name to compare across devices"),
+    backend: Optional[str] = Query(None),
+):
+    device_models = [d.strip() for d in devices.split(",") if d.strip()]
+    if len(device_models) < 2:
+        raise HTTPException(status_code=400, detail="Provide at least 2 device model names")
+    data = await compute_compare_devices(
+        _db(request), device_models=device_models, model=model, backend=backend,
+    )
     return ApiSuccess(data=data)
 
 
@@ -251,7 +283,6 @@ async def get_run(request: Request, run_id: str):
 async def get_run_summary(request: Request, run_id: str):
     db = _db(request)
 
-    # Verify run exists
     async with db.execute("SELECT id FROM runs WHERE run_id = ?", (run_id,)) as cur:
         row = await cur.fetchone()
     if not row:
@@ -328,7 +359,6 @@ async def export_csv(
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for r in rows:
-        m = r.metrics or {}
         writer.writerow({
             "status": r.status,
             "prompt_id": r.prompt_id,

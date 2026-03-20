@@ -4,12 +4,13 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { ErrorFallback } from '@/components/feedback/ErrorFallback'
 import { LoadingSkeleton } from '@/components/feedback/LoadingSkeleton'
 
-const Overview    = lazy(() => import('@/pages/Overview'))
-const Performance = lazy(() => import('@/pages/Performance'))
-const Compare     = lazy(() => import('@/pages/Compare'))
-const Responses   = lazy(() => import('@/pages/Responses'))
-const RawData     = lazy(() => import('@/pages/RawData'))
-const RunHistory  = lazy(() => import('@/pages/RunHistory'))
+const Overview      = lazy(() => import('@/pages/Overview'))
+const Performance   = lazy(() => import('@/pages/Performance'))
+const Compare       = lazy(() => import('@/pages/Compare'))
+const DeviceCompare = lazy(() => import('@/pages/DeviceCompare'))
+const Responses     = lazy(() => import('@/pages/Responses'))
+const RawData       = lazy(() => import('@/pages/RawData'))
+const RunHistory    = lazy(() => import('@/pages/RunHistory'))
 
 interface EBState { error: string | null }
 class ErrorBoundary extends Component<{ children: ReactNode }, EBState> {
@@ -51,13 +52,14 @@ export default function App() {
       <BrowserRouter>
         <Layout>
           <Routes>
-            <Route path="/"            element={<Overview />} />
-            <Route path="/performance" element={<Performance />} />
-            <Route path="/compare"     element={<Compare />} />
-            <Route path="/responses"   element={<Responses />} />
-            <Route path="/raw"         element={<RawData />} />
-            <Route path="/runs"        element={<RunHistory />} />
-            <Route path="*"            element={<Navigate to="/" replace />} />
+            <Route path="/"               element={<Overview />} />
+            <Route path="/performance"    element={<Performance />} />
+            <Route path="/compare"        element={<Compare />} />
+            <Route path="/device-compare" element={<DeviceCompare />} />
+            <Route path="/responses"      element={<Responses />} />
+            <Route path="/raw"            element={<RawData />} />
+            <Route path="/runs"           element={<RunHistory />} />
+            <Route path="*"               element={<Navigate to="/" replace />} />
           </Routes>
         </Layout>
       </BrowserRouter>

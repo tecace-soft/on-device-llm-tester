@@ -4,7 +4,14 @@ from typing import Optional
 
 import aiosqlite
 
-from schemas import CategorySummary, CompareResult, ModelSummary, PercentileStats, SummaryStats
+from schemas import (
+    CategorySummary,
+    CompareResult,
+    DeviceCompareResult,
+    ModelSummary,
+    PercentileStats,
+    SummaryStats,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -206,4 +213,47 @@ async def compute_compare(
         stats = await _build_summary(db, where, params)
         by_cat = await compute_by_category(db, device=device, model=name, backend=backend)
         results.append(CompareResult(model_name=name, stats=stats, by_category=by_cat))
+    return results
+
+
+# ── Device Compare (Phase 3) ─────────────────────────────────────────────────
+
+async def compute_compare_devices(
+    db: aiosqlite.Connection,
+    device_models: list[str],
+    model: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> list[DeviceCompareResult]:
+    """디바이스 간 동일 모델 성능 비교."""
+    results = []
+    for device_model in device_models:
+        where, params = _build_where(device_model, model, None, backend, None)
+        stats = await _build_summary(db, where, params)
+
+        device_info: dict = {}
+        async with db.execute(
+            "SELECT manufacturer, model, product, soc, android_version, sdk_int, cpu_cores, max_heap_mb FROM devices WHERE model = ?",
+            (device_model,),
+        ) as cur:
+            dev_row = await cur.fetchone()
+            if dev_row:
+                device_info = {
+                    "manufacturer": dev_row["manufacturer"],
+                    "model": dev_row["model"],
+                    "product": dev_row["product"],
+                    "soc": dev_row["soc"],
+                    "android_version": dev_row["android_version"],
+                    "sdk_int": dev_row["sdk_int"],
+                    "cpu_cores": dev_row["cpu_cores"],
+                    "max_heap_mb": dev_row["max_heap_mb"],
+                }
+
+        by_cat = await compute_by_category(db, device=device_model, model=model, backend=backend)
+
+        results.append(DeviceCompareResult(
+            device_model=device_model,
+            device_info=device_info,
+            stats=stats,
+            by_category=by_cat,
+        ))
     return results
