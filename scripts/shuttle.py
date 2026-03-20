@@ -11,6 +11,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+
+DEFAULT_LOCAL_MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
+DEFAULT_PHONE_MODEL_PATH = "/data/local/tmp/llm_test/models"
+
 
 def sync_models_to_phone(serial: str | None = None) -> bool:
     """Sync local models to a single device.
@@ -21,8 +27,8 @@ def sync_models_to_phone(serial: str | None = None) -> bool:
     Returns:
         True if sync succeeded.
     """
-    local_dir = os.getenv("LOCAL_MODEL_DIR")
-    remote_dir = os.getenv("PHONE_MODEL_PATH")
+    local_dir = os.getenv("LOCAL_MODEL_DIR", DEFAULT_LOCAL_MODEL_DIR)
+    remote_dir = os.getenv("PHONE_MODEL_PATH", DEFAULT_PHONE_MODEL_PATH)
 
     if not os.path.exists(local_dir):
         logger.error("Local directory '%s' not found.", local_dir)
