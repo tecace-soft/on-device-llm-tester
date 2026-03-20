@@ -18,16 +18,117 @@ Usage:
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Optional
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # ── 프로젝트 루트 기준 절대경로 (scripts/ 한 단계 위) ─────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", str(_PROJECT_ROOT / "results")))
 DB_PATH     = Path(os.getenv("DB_PATH",     str(_PROJECT_ROOT / "api" / "data" / "llm_tester.db")))
+
+
+# ── Shared DDL (single source of truth) ───────────────────────────────────────
+# NOTE: This DDL is intentionally duplicated from api/db.py for sync-driver usage.
+#       If you modify the schema, update BOTH files.
+#       TODO: Extract to a shared db_schema.py module.
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS devices (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    manufacturer    TEXT NOT NULL DEFAULT '',
+    model           TEXT NOT NULL DEFAULT '',
+    product         TEXT NOT NULL DEFAULT '',
+    soc             TEXT NOT NULL DEFAULT '',
+    android_version TEXT NOT NULL DEFAULT '',
+    sdk_int         INTEGER NOT NULL DEFAULT 0,
+    cpu_cores       INTEGER NOT NULL DEFAULT 0,
+    max_heap_mb     INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(manufacturer, model, product)
+);
+
+CREATE TABLE IF NOT EXISTS models (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_name  TEXT NOT NULL DEFAULT '',
+    model_path  TEXT NOT NULL DEFAULT '',
+    backend     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(model_name, model_path, backend)
+);
+
+CREATE TABLE IF NOT EXISTS prompts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt_id   TEXT NOT NULL UNIQUE,
+    category    TEXT NOT NULL DEFAULT '',
+    lang        TEXT NOT NULL DEFAULT 'en',
+    prompt_text TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT NOT NULL UNIQUE,
+    trigger     TEXT NOT NULL DEFAULT '',
+    commit_sha  TEXT,
+    branch      TEXT,
+    started_at  TEXT,
+    finished_at TEXT,
+    status      TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE TABLE IF NOT EXISTS results (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id     INTEGER NOT NULL REFERENCES devices(id),
+    model_id      INTEGER NOT NULL REFERENCES models(id),
+    prompt_id     INTEGER NOT NULL REFERENCES prompts(id),
+    run_id        INTEGER REFERENCES runs(id),
+
+    status        TEXT NOT NULL CHECK(status IN ('success', 'error')),
+    latency_ms    REAL,
+    init_time_ms  REAL,
+
+    response      TEXT NOT NULL DEFAULT '',
+    error         TEXT,
+
+    ttft_ms               REAL,
+    prefill_time_ms       REAL,
+    decode_time_ms        REAL,
+    input_token_count     INTEGER,
+    output_token_count    INTEGER,
+    prefill_tps           REAL,
+    decode_tps            REAL,
+    peak_java_memory_mb   REAL,
+    peak_native_memory_mb REAL,
+    itl_p50_ms            REAL,
+    itl_p95_ms            REAL,
+    itl_p99_ms            REAL,
+
+    timestamp  INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(device_id, model_id, prompt_id, timestamp)
+);
+
+CREATE INDEX IF NOT EXISTS idx_results_status    ON results(status);
+CREATE INDEX IF NOT EXISTS idx_results_device    ON results(device_id);
+CREATE INDEX IF NOT EXISTS idx_results_model     ON results(model_id);
+CREATE INDEX IF NOT EXISTS idx_results_prompt    ON results(prompt_id);
+CREATE INDEX IF NOT EXISTS idx_results_run       ON results(run_id);
+CREATE INDEX IF NOT EXISTS idx_results_timestamp ON results(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_results_filter    ON results(device_id, model_id, status);
+"""
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -43,91 +144,7 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_tables(con: sqlite3.Connection) -> None:
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS devices (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            manufacturer    TEXT NOT NULL DEFAULT '',
-            model           TEXT NOT NULL DEFAULT '',
-            product         TEXT NOT NULL DEFAULT '',
-            soc             TEXT NOT NULL DEFAULT '',
-            android_version TEXT NOT NULL DEFAULT '',
-            sdk_int         INTEGER NOT NULL DEFAULT 0,
-            cpu_cores       INTEGER NOT NULL DEFAULT 0,
-            max_heap_mb     INTEGER NOT NULL DEFAULT 0,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(manufacturer, model, product)
-        );
-
-        CREATE TABLE IF NOT EXISTS models (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_name  TEXT NOT NULL DEFAULT '',
-            model_path  TEXT NOT NULL DEFAULT '',
-            backend     TEXT NOT NULL DEFAULT '',
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(model_name, model_path, backend)
-        );
-
-        CREATE TABLE IF NOT EXISTS prompts (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            prompt_id   TEXT NOT NULL UNIQUE,
-            category    TEXT NOT NULL DEFAULT '',
-            lang        TEXT NOT NULL DEFAULT 'en',
-            prompt_text TEXT NOT NULL DEFAULT '',
-            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS runs (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id      TEXT NOT NULL UNIQUE,
-            trigger     TEXT NOT NULL DEFAULT '',
-            commit_sha  TEXT,
-            branch      TEXT,
-            started_at  TEXT,
-            finished_at TEXT,
-            status      TEXT NOT NULL DEFAULT 'running'
-        );
-
-        CREATE TABLE IF NOT EXISTS results (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id     INTEGER NOT NULL REFERENCES devices(id),
-            model_id      INTEGER NOT NULL REFERENCES models(id),
-            prompt_id     INTEGER NOT NULL REFERENCES prompts(id),
-            run_id        INTEGER REFERENCES runs(id),
-
-            status        TEXT NOT NULL CHECK(status IN ('success', 'error')),
-            latency_ms    REAL,
-            init_time_ms  REAL,
-
-            response      TEXT NOT NULL DEFAULT '',
-            error         TEXT,
-
-            ttft_ms               REAL,
-            prefill_time_ms       REAL,
-            decode_time_ms        REAL,
-            input_token_count     INTEGER,
-            output_token_count    INTEGER,
-            prefill_tps           REAL,
-            decode_tps            REAL,
-            peak_java_memory_mb   REAL,
-            peak_native_memory_mb REAL,
-            itl_p50_ms            REAL,
-            itl_p95_ms            REAL,
-            itl_p99_ms            REAL,
-
-            timestamp  INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-
-            UNIQUE(device_id, model_id, prompt_id, timestamp)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_results_status    ON results(status);
-        CREATE INDEX IF NOT EXISTS idx_results_device    ON results(device_id);
-        CREATE INDEX IF NOT EXISTS idx_results_model     ON results(model_id);
-        CREATE INDEX IF NOT EXISTS idx_results_prompt    ON results(prompt_id);
-        CREATE INDEX IF NOT EXISTS idx_results_run       ON results(run_id);
-        CREATE INDEX IF NOT EXISTS idx_results_timestamp ON results(timestamp DESC);
-        CREATE INDEX IF NOT EXISTS idx_results_filter    ON results(device_id, model_id, status);
-    """)
+    con.executescript(_DDL)
     cols = {row[1] for row in con.execute("PRAGMA table_info(results)")}
     if "run_id" not in cols:
         con.execute("ALTER TABLE results ADD COLUMN run_id INTEGER REFERENCES runs(id)")
@@ -176,7 +193,7 @@ def upsert_prompt(con: sqlite3.Connection, prompt_id: str, category: str,
 # ── runs table ────────────────────────────────────────────────────────────────
 
 def create_run(con: sqlite3.Connection, run_id: str, trigger: str,
-               commit_sha: str | None, branch: str | None) -> int:
+               commit_sha: Optional[str], branch: Optional[str]) -> int:
     con.execute("""
         INSERT OR IGNORE INTO runs (run_id, trigger, commit_sha, branch, started_at, status)
         VALUES (?, ?, ?, ?, datetime('now'), 'running')
@@ -196,120 +213,89 @@ def finalize_run(con: sqlite3.Connection, run_pk: int, status: str) -> None:
 
 # ── JSON parsing ──────────────────────────────────────────────────────────────
 
-def _float(val) -> float | None:
+def _float(v: object) -> Optional[float]:
+    if v is None:
+        return None
     try:
-        return float(val) if val is not None else None
-    except (TypeError, ValueError):
+        return float(v)
+    except (ValueError, TypeError):
         return None
 
 
-def _int(val) -> int | None:
+def _int(v: object) -> Optional[int]:
+    if v is None:
+        return None
     try:
-        return int(val) if val is not None else None
-    except (TypeError, ValueError):
+        return int(v)
+    except (ValueError, TypeError):
         return None
 
 
-def _str(val, default: str = "") -> str:
-    return str(val) if val is not None else default
-
-
-def parse_result_file(path: Path) -> dict | None:
+def parse_result_file(path: Path) -> Optional[dict]:
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception as e:
-        print(f"  [WARN] parse error {path}: {e}", file=sys.stderr)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("JSON parse failed for %s: %s", path, e)
         return None
 
-    if not isinstance(data, dict):
-        print(f"  [WARN] unexpected JSON root type in {path}", file=sys.stderr)
-        return None
+    device = data.get("device") or {}
+    met = data.get("metrics") or {}
 
-    parts = path.parts
-    device_dir = parts[-3] if len(parts) >= 3 else "unknown"
-    model_dir  = parts[-2] if len(parts) >= 2 else "unknown"
-
-    # Device — guard: "device" key may be a string in flat JSON
-    dev = data.get("device") if isinstance(data.get("device"), dict) else {}
-    manufacturer    = _str(dev.get("manufacturer") or data.get("manufacturer") or data.get("device_manufacturer", ""))
-    device_model    = _str(dev.get("model")        or data.get("device_model")  or device_dir)
-    product         = _str(dev.get("product")      or data.get("product", ""))
-    soc             = _str(dev.get("soc")          or data.get("soc", ""))
-    android_version = _str(dev.get("android_version") or data.get("android_version", ""))
-    sdk_int         = _int(dev.get("sdk_int")      or data.get("sdk_int", 0)) or 0
-    cpu_cores       = _int(dev.get("cpu_cores")    or data.get("cpu_cores", 0)) or 0
-    max_heap_mb     = _int(dev.get("max_heap_mb")  or data.get("max_heap_mb", 0)) or 0
-
-    # Model — guard: "model" key may be a string in flat JSON
-    mdl = data.get("model") if isinstance(data.get("model"), dict) else {}
-    model_name = _str(mdl.get("model_name") or data.get("model_name") or model_dir)
-    model_path = _str(mdl.get("model_path") or data.get("model_path", ""))
-    backend    = _str(mdl.get("backend")    or data.get("backend", ""))
-
-    # Prompt — "prompt" key is a plain string (the prompt text), not a dict
-    prm = data.get("prompt_info") if isinstance(data.get("prompt_info"), dict) else {}
-    prompt_text_raw = data.get("prompt")
-    prompt_text = _str(prompt_text_raw) if not isinstance(prompt_text_raw, dict) else ""
-    prompt_id   = _str(prm.get("prompt_id") or data.get("prompt_id") or path.stem)
-    # Android app writes "prompt_category" and "prompt_lang" keys in the result JSON
-    category    = _str(prm.get("category")  or data.get("prompt_category") or data.get("category", ""))
-    lang        = _str(prm.get("lang")      or data.get("prompt_lang")     or data.get("lang", "en"))
-    if not prompt_text:
-        prompt_text = _str(prm.get("prompt_text") or data.get("prompt_text", ""))
-
-    status = _str(data.get("status", "error"))
-    if status not in ("success", "error"):
-        status = "error"
-
-    # ── Metrics: nested "metrics" dict 우선, flat fallback (구버전 PoC 호환) ──
-    met = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+    model_path = data.get("model_path", "")
+    model_name = data.get("model_name", "")
+    if not model_name and model_path:
+        model_name = os.path.basename(model_path)
 
     return {
-        "manufacturer":    manufacturer,
-        "device_model":    device_model,
-        "product":         product,
-        "soc":             soc,
-        "android_version": android_version,
-        "sdk_int":         sdk_int,
-        "cpu_cores":       cpu_cores,
-        "max_heap_mb":     max_heap_mb,
-        "model_name":      model_name,
-        "model_path":      model_path,
-        "backend":         backend,
-        "prompt_id":       prompt_id,
-        "category":        category,
-        "lang":            lang,
-        "prompt_text":     prompt_text,
-        "status":          status,
+        "manufacturer":          device.get("manufacturer", ""),
+        "device_model":          device.get("model", ""),
+        "product":               device.get("product", ""),
+        "soc":                   device.get("soc", ""),
+        "android_version":       device.get("android_version", ""),
+        "sdk_int":               _int(device.get("sdk_int")) or 0,
+        "cpu_cores":             _int(device.get("cpu_cores")) or 0,
+        "max_heap_mb":           _int(device.get("max_heap_mb")) or 0,
+        "model_name":            model_name,
+        "model_path":            model_path,
+        "backend":               (data.get("backend") or "CPU").upper(),
+        "prompt_id":             data.get("prompt_id", "unknown"),
+        "category":              data.get("prompt_category", ""),
+        "lang":                  data.get("prompt_lang", "en"),
+        "prompt_text":           data.get("prompt", ""),
+        "status":                data.get("status", "error"),
         "latency_ms":            _float(data.get("latency_ms")),
         "init_time_ms":          _float(data.get("init_time_ms")),
-        "response":              _str(data.get("response")),
+        "response":              data.get("response", ""),
         "error":                 data.get("error"),
-        "ttft_ms":               _float(met.get("ttft_ms")               or data.get("ttft_ms")),
-        "prefill_time_ms":       _float(met.get("prefill_time_ms")       or data.get("prefill_time_ms")),
-        "decode_time_ms":        _float(met.get("decode_time_ms")        or data.get("decode_time_ms")),
-        "input_token_count":     _int(met.get("input_token_count")       or data.get("input_token_count")),
-        "output_token_count":    _int(met.get("output_token_count")      or data.get("output_token_count")),
-        "prefill_tps":           _float(met.get("prefill_tps")           or data.get("prefill_tps")),
-        "decode_tps":            _float(met.get("decode_tps")            or data.get("decode_tps")),
-        "peak_java_memory_mb":   _float(met.get("peak_java_memory_mb")   or data.get("peak_java_memory_mb")),
+        "ttft_ms":               _float(met.get("ttft_ms")              or data.get("ttft_ms")),
+        "prefill_time_ms":       _float(met.get("prefill_time_ms")      or data.get("prefill_time_ms")),
+        "decode_time_ms":        _float(met.get("decode_time_ms")       or data.get("decode_time_ms")),
+        "input_token_count":     _int(met.get("input_token_count")      or data.get("input_token_count")),
+        "output_token_count":    _int(met.get("output_token_count")     or data.get("output_token_count")),
+        "prefill_tps":           _float(met.get("prefill_tps")          or data.get("prefill_tps")),
+        "decode_tps":            _float(met.get("decode_tps")           or data.get("decode_tps")),
+        "peak_java_memory_mb":   _float(met.get("peak_java_memory_mb")  or data.get("peak_java_memory_mb")),
         "peak_native_memory_mb": _float(met.get("peak_native_memory_mb") or data.get("peak_native_memory_mb")),
-        "itl_p50_ms":            _float(met.get("itl_p50_ms")            or data.get("itl_p50_ms")),
-        "itl_p95_ms":            _float(met.get("itl_p95_ms")            or data.get("itl_p95_ms")),
-        "itl_p99_ms":            _float(met.get("itl_p99_ms")            or data.get("itl_p99_ms")),
+        "itl_p50_ms":            _float(met.get("itl_p50_ms")           or data.get("itl_p50_ms")),
+        "itl_p95_ms":            _float(met.get("itl_p95_ms")           or data.get("itl_p95_ms")),
+        "itl_p99_ms":            _float(met.get("itl_p99_ms")           or data.get("itl_p99_ms")),
         "timestamp":             _int(data.get("timestamp")),
     }
 
 
 # ── Core ingest ───────────────────────────────────────────────────────────────
+# FIX(P2): Previous version used con.rollback() inside the per-record loop,
+# which rolled back ALL previously inserted records in the same transaction.
+# Now we use autocommit=False and commit in batches. Individual INSERT OR IGNORE
+# failures are caught without rolling back the entire batch.
 
-def ingest(con: sqlite3.Connection, run_pk: int | None) -> tuple[int, int, int]:
+def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, int]:
     inserted = skipped = errors = 0
 
     json_files = list(RESULTS_DIR.rglob("*.json"))
     if not json_files:
-        print(f"No JSON files found in {RESULTS_DIR}", file=sys.stderr)
+        logger.warning("No JSON files found in %s", RESULTS_DIR)
         return inserted, skipped, errors
 
     for path in sorted(json_files):
@@ -355,9 +341,12 @@ def ingest(con: sqlite3.Connection, run_pk: int | None) -> tuple[int, int, int]:
             else:
                 skipped += 1
         except Exception as e:
-            print(f"  [ERROR] insert failed for {path}: {e}", file=sys.stderr)
+            # FIX(P2): Do NOT call con.rollback() here.
+            # INSERT OR IGNORE handles UNIQUE violations gracefully.
+            # Other errors (e.g. CHECK constraint) are logged and skipped
+            # without destroying previously successful inserts in this batch.
+            logger.error("Insert failed for %s: %s", path, e)
             errors += 1
-            con.rollback()
             continue
 
     con.commit()
@@ -376,7 +365,7 @@ def print_summary(con: sqlite3.Connection) -> None:
     """).fetchone()
     total   = row[0] or 0
     success = row[1] or 0
-    errors  = row[2] or 0
+    errs    = row[2] or 0
 
     run_row = con.execute("""
         SELECT run_id, trigger, branch, started_at, status
@@ -385,7 +374,7 @@ def print_summary(con: sqlite3.Connection) -> None:
 
     print(f"Total results in DB : {total}")
     print(f"  success           : {success}")
-    print(f"  error             : {errors}")
+    print(f"  error             : {errs}")
     if run_row:
         print(f"Latest run          : {run_row['run_id']} ({run_row['trigger']}) "
               f"branch={run_row['branch']} started={run_row['started_at']} status={run_row['status']}")
@@ -423,11 +412,11 @@ def main() -> None:
         con.close()
         return
 
-    run_pk: int | None = None
+    run_pk: Optional[int] = None
     if args.run_id:
         run_pk = create_run(con, args.run_id, args.trigger, args.commit_sha, args.branch)
-        print(f"[run] started  run_id={args.run_id} trigger={args.trigger} "
-              f"branch={args.branch} commit={args.commit_sha}")
+        logger.info("Run started  run_id=%s trigger=%s branch=%s commit=%s",
+                     args.run_id, args.trigger, args.branch, args.commit_sha)
 
     try:
         inserted, skipped, errors = ingest(con, run_pk)
@@ -435,13 +424,19 @@ def main() -> None:
         if run_pk is not None:
             finalize_run(con, run_pk, "error")
         con.close()
-        print(f"[FATAL] ingest failed: {e}", file=sys.stderr)
+        logger.fatal("Ingest failed: %s", e)
         sys.exit(1)
 
     if run_pk is not None:
-        status = "error" if errors and not inserted else "success"
+        # FIX(H): Mark as error if nothing was inserted (phantom run prevention)
+        if inserted == 0 and errors == 0 and skipped == 0:
+            status = "error"
+        elif errors and not inserted:
+            status = "error"
+        else:
+            status = "success"
         finalize_run(con, run_pk, status)
-        print(f"[run] finished run_id={args.run_id} status={status}")
+        logger.info("Run finished run_id=%s status=%s", args.run_id, status)
 
     print(f"\nIngest complete — inserted: {inserted}, skipped: {skipped}, errors: {errors}")
     con.close()

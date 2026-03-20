@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import client, { ApiClientError } from '@/api/client'
 import type {
   ResultItem,
@@ -18,8 +18,25 @@ interface AsyncState<T> {
   error: string | null
 }
 
+// ── Global refresh counter (shared across all hooks) ──────────────────────────
+// FIX(R2): useRefresh now provides a tick that can be passed into individual hooks
+
+let _globalTick = 0
+const _listeners = new Set<() => void>()
+
+function useGlobalRefreshTick(): number {
+  const [tick, setTick] = useState(_globalTick)
+  useEffect(() => {
+    const listener = () => setTick(_globalTick)
+    _listeners.add(listener)
+    return () => { _listeners.delete(listener) }
+  }, [])
+  return tick
+}
+
 function useAsync<T>(fetchFn: () => Promise<T>, deps: unknown[]): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ data: null, loading: true, error: null })
+  const tick = useGlobalRefreshTick()
 
   useEffect(() => {
     let cancelled = false
@@ -34,7 +51,7 @@ function useAsync<T>(fetchFn: () => Promise<T>, deps: unknown[]): AsyncState<T> 
       })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps)
+  }, [...deps, tick])
 
   return state
 }
@@ -48,7 +65,7 @@ export function useResults(filters: Filters) {
       const res = await client.get<ApiSuccess<ResultItem[]>>('/results', { params })
       return { items: res.data.data, meta: res.data.meta }
     },
-    [JSON.stringify(filters)],
+    [JSON.stringify(params)],
   )
 }
 
@@ -59,7 +76,7 @@ export function useSummary(filters: Omit<Filters, 'limit' | 'offset'>) {
       const res = await client.get<ApiSuccess<SummaryStats>>('/results/summary', { params })
       return res.data.data
     },
-    [JSON.stringify(filters)],
+    [JSON.stringify(params)],
   )
 }
 
@@ -69,7 +86,7 @@ export function useByModel(filters?: { device?: string; category?: string; backe
       const res = await client.get<ApiSuccess<ModelSummary[]>>('/results/by-model', { params: filters })
       return res.data.data
     },
-    [JSON.stringify(filters)],
+    [filters?.device, filters?.category, filters?.backend],
   )
 }
 
@@ -79,7 +96,7 @@ export function useByCategory(filters?: { device?: string; model?: string; backe
       const res = await client.get<ApiSuccess<CategorySummary[]>>('/results/by-category', { params: filters })
       return res.data.data
     },
-    [JSON.stringify(filters)],
+    [filters?.device, filters?.model, filters?.backend],
   )
 }
 
@@ -148,10 +165,13 @@ export function useRuns(status?: string, limit = 20, offset = 0) {
   )
 }
 
+// FIX(R2): useRefresh now triggers re-fetch in ALL hooks via global tick
 export function useRefresh() {
-  const [tick, setTick] = useState(0)
-  const refresh = useCallback(() => setTick((t) => t + 1), [])
-  return { tick, refresh }
+  const refresh = useCallback(() => {
+    _globalTick += 1
+    _listeners.forEach((fn) => fn())
+  }, [])
+  return { refresh }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

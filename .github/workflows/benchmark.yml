@@ -11,6 +11,10 @@ jobs:
   benchmark:
     runs-on: [self-hosted, llm-bench]
     timeout-minutes: 120
+    # FIX(L): Default shell explicitly set for Windows Runner
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - name: Checkout
@@ -49,6 +53,23 @@ jobs:
             --trigger manual `
             --commit-sha ${{ github.sha }} `
             --branch ${{ github.ref_name }}
+
+      # FIX(M): Flush WAL to main DB before uploading artifact.
+      # Without this, .db-wal and .db-shm are excluded from artifact → data loss on restore.
+      - name: Flush WAL checkpoint
+        if: always()
+        run: |
+          python -c @"
+          import sqlite3, os
+          db_path = os.path.join('api', 'data', 'llm_tester.db')
+          if os.path.exists(db_path):
+              con = sqlite3.connect(db_path)
+              con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+              con.close()
+              print('WAL checkpoint complete')
+          else:
+              print('DB file not found, skipping checkpoint')
+          "@
 
       - name: Upload DB artifact
         uses: actions/upload-artifact@v4

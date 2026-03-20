@@ -1,4 +1,25 @@
-// ── Device & Metrics ───────────────────────────────────────────────────────────
+// ── API Response wrappers ───────────────────────────────────────────────────
+
+export interface PaginationMeta {
+  total: number
+  limit: number
+  offset: number
+  has_more: boolean
+}
+
+export interface ApiSuccess<T> {
+  status: 'ok'
+  data: T
+  meta: PaginationMeta | null
+}
+
+export interface ApiError {
+  status: 'error'
+  error: string
+  detail?: string
+}
+
+// ── Device / Metrics ────────────────────────────────────────────────────────
 
 export interface DeviceInfo {
   manufacturer: string
@@ -26,66 +47,31 @@ export interface Metrics {
   itl_p99_ms: number | null
 }
 
-// ── Result shapes ──────────────────────────────────────────────────────────────
+// ── Result ──────────────────────────────────────────────────────────────────
 
-export interface ResultSuccess {
-  status: 'success'
+// FIX(K): Synced with DB CHECK constraint: status IN ('success', 'error')
+export type ResultStatus = 'success' | 'error'
+
+export interface ResultItem {
+  status: ResultStatus
   prompt_id: string
   prompt_category: string
   prompt_lang: string
   model_name: string
   model_path: string
-  backend: 'CPU' | 'GPU'
+  backend: string
   device: DeviceInfo
   prompt: string
   response: string
-  latency_ms: number
-  init_time_ms: number
-  metrics: Metrics
-  timestamp: number
+  latency_ms: number | null
+  init_time_ms: number | null
+  metrics: Metrics | null
+  error: string | null
+  timestamp: number | null
   run_id: string | null
 }
 
-export interface ResultError {
-  status: 'error'
-  prompt_id: string
-  prompt_category: string
-  model_name: string
-  device: DeviceInfo
-  prompt: string
-  response: string
-  error: string
-  metrics: null
-  timestamp: number
-  run_id: string | null
-}
-
-export type ResultItem = ResultSuccess | ResultError
-
-// ── API response wrappers ──────────────────────────────────────────────────────
-
-export interface PaginationMeta {
-  total: number
-  limit: number
-  offset: number
-  has_more: boolean
-}
-
-export interface ApiSuccess<T> {
-  status: 'ok'
-  data: T
-  meta: PaginationMeta | null
-}
-
-export interface ApiError {
-  status: 'error'
-  error: string
-  detail?: string
-}
-
-export type ApiResponse<T> = ApiSuccess<T> | ApiError
-
-// ── Stats / Summary ────────────────────────────────────────────────────────────
+// ── Summary / Aggregate ─────────────────────────────────────────────────────
 
 export interface PercentileStats {
   p50: number
@@ -127,7 +113,24 @@ export interface CompareResult {
   by_category: CategorySummary[]
 }
 
-// ── Filter state ───────────────────────────────────────────────────────────────
+// ── CI/CD Run (Phase 2) ────────────────────────────────────────────────────
+
+// FIX(K): Explicit literal union synced with DB + backend schema
+export type RunStatus = 'running' | 'success' | 'error'
+
+export interface RunItem {
+  id: number
+  run_id: string
+  trigger: string
+  commit_sha: string | null
+  branch: string | null
+  started_at: string | null
+  finished_at: string | null
+  status: RunStatus
+  result_count: number | null
+}
+
+// ── Filters ─────────────────────────────────────────────────────────────────
 
 export interface Filters {
   device?: string
@@ -138,18 +141,4 @@ export interface Filters {
   run_id?: string
   limit: number
   offset: number
-}
-
-// ── CI/CD Run (Phase 2) ────────────────────────────────────────────────────────
-
-export interface RunItem {
-  id: number
-  run_id: string
-  trigger: string
-  commit_sha: string | null
-  branch: string | null
-  started_at: string | null
-  finished_at: string | null
-  status: 'running' | 'success' | 'error'
-  result_count: number | null
 }
