@@ -2,11 +2,6 @@
   "timeout_sec": 60,
   "models": [
     {
-      "path": "/data/local/tmp/llm_test/models/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
-      "max_tokens": 1280,
-      "backend": "CPU"
-    },
-    {
       "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
       "max_tokens": 1024,
       "backend": "CPU"
