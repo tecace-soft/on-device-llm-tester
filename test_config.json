@@ -12,163 +12,201 @@
       "id": "minimal_01",
       "category": "minimal_output",
       "lang": "en",
-      "prompt": "What is 2 + 2? Reply with only the number."
+      "prompt": "What is 2 + 2? Reply with only the number.",
+      "ground_truth": "4",
+      "eval_strategy": "deterministic"
     },
     {
       "id": "minimal_02",
       "category": "minimal_output",
       "lang": "en",
-      "prompt": "Is water wet? Reply with only 'yes' or 'no'."
+      "prompt": "Is water wet? Reply with only 'yes' or 'no'.",
+      "ground_truth": "yes",
+      "eval_strategy": "deterministic"
     },
     {
       "id": "factual_01",
       "category": "knowledge",
       "lang": "en",
-      "prompt": "What is the capital of France?"
+      "prompt": "What is the capital of France?",
+      "ground_truth": "Paris",
+      "eval_strategy": "deterministic_with_fallback"
     },
     {
       "id": "factual_02",
       "category": "knowledge",
       "lang": "en",
-      "prompt": "What is the chemical formula for water?"
+      "prompt": "What is the chemical formula for water?",
+      "ground_truth": "H2O",
+      "eval_strategy": "deterministic_with_fallback"
     },
     {
       "id": "math_01",
       "category": "math",
       "lang": "en",
-      "prompt": "What is 237 + 485?"
+      "prompt": "What is 237 + 485?",
+      "ground_truth": "722",
+      "eval_strategy": "deterministic"
     },
     {
       "id": "math_02",
       "category": "math",
       "lang": "en",
-      "prompt": "9.11 - 9.9 = ?"
+      "prompt": "9.11 - 9.9 = ?",
+      "ground_truth": "-0.79",
+      "eval_strategy": "deterministic"
     },
     {
       "id": "math_03",
       "category": "math",
       "lang": "en",
-      "prompt": "A train travels 60 km in 45 minutes. What is its speed in km/h?"
+      "prompt": "A train travels 60 km in 45 minutes. What is its speed in km/h?",
+      "ground_truth": "80",
+      "eval_strategy": "deterministic"
     },
     {
       "id": "reason_01",
       "category": "reasoning",
       "lang": "en",
-      "prompt": "A is taller than B. B is taller than C. Who is the tallest?"
+      "prompt": "A is taller than B. B is taller than C. Who is the tallest?",
+      "ground_truth": "A",
+      "eval_strategy": "deterministic_with_fallback"
     },
     {
       "id": "reason_02",
       "category": "reasoning",
       "lang": "en",
-      "prompt": "If all roses are flowers and some flowers fade quickly, can we say some roses fade quickly?"
+      "prompt": "If all roses are flowers and some flowers fade quickly, can we say some roses fade quickly?",
+      "ground_truth": "No",
+      "eval_strategy": "deterministic_with_fallback"
     },
     {
       "id": "explain_short_01",
       "category": "knowledge",
       "lang": "en",
-      "prompt": "Explain quantum computing in simple terms."
+      "prompt": "Explain quantum computing in simple terms.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "explain_short_02",
       "category": "knowledge",
       "lang": "en",
-      "prompt": "Explain how a refrigerator works."
+      "prompt": "Explain how a refrigerator works.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "explain_long_01",
       "category": "long_generation",
       "lang": "en",
-      "prompt": "Explain the theory of special relativity, including time dilation and length contraction, with examples."
+      "prompt": "Explain the theory of special relativity, including time dilation and length contraction, with examples.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "explain_long_02",
       "category": "long_generation",
       "lang": "en",
-      "prompt": "Describe the process of photosynthesis from light absorption to glucose production in detail."
+      "prompt": "Describe the process of photosynthesis from light absorption to glucose production in detail.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "explain_long_03",
       "category": "long_generation",
       "lang": "en",
-      "prompt": "Write a detailed comparison of TCP and UDP protocols. Cover reliability, speed, use cases, and header structure."
+      "prompt": "Write a detailed comparison of TCP and UDP protocols. Cover reliability, speed, use cases, and header structure.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "code_01",
       "category": "code",
       "lang": "en",
-      "prompt": "Write a Python function that returns the factorial of a number."
+      "prompt": "Write a Python function that returns the factorial of a number.",
+      "ground_truth": null,
+      "eval_strategy": "structural"
     },
     {
       "id": "code_02",
       "category": "code",
       "lang": "en",
-      "prompt": "Write a Python function for binary search on a sorted list. Include docstring and edge case handling."
+      "prompt": "Write a Python function for binary search on a sorted list. Include docstring and edge case handling.",
+      "ground_truth": null,
+      "eval_strategy": "structural"
     },
     {
       "id": "code_03",
       "category": "code",
       "lang": "en",
-      "prompt": "Write a Python class for a stack data structure with push, pop, peek, and is_empty methods."
+      "prompt": "Write a Python class for a stack data structure with push, pop, peek, and is_empty methods.",
+      "ground_truth": null,
+      "eval_strategy": "structural"
     },
     {
       "id": "structured_01",
       "category": "structured_output",
       "lang": "en",
-      "prompt": "List these items as a JSON array: apple, banana, grape, mango"
+      "prompt": "List these items as a JSON array: apple, banana, grape, mango",
+      "ground_truth": "apple,banana,grape,mango",
+      "eval_strategy": "structural"
     },
     {
       "id": "structured_02",
       "category": "structured_output",
       "lang": "en",
-      "prompt": "Create a JSON object with fields: name, age, city, hobbies (array). Fill with sample data for a software engineer."
+      "prompt": "Create a JSON object with fields: name, age, city, hobbies (array). Fill with sample data for a software engineer.",
+      "ground_truth": "name,age,city,hobbies",
+      "eval_strategy": "structural"
     },
     {
       "id": "structured_03",
       "category": "structured_output",
       "lang": "en",
-      "prompt": "Generate a markdown table comparing Python, JavaScript, and Rust across: typing, speed, memory safety, and primary use case."
+      "prompt": "Generate a markdown table comparing Python, JavaScript, and Rust across: typing, speed, memory safety, and primary use case.",
+      "ground_truth": null,
+      "eval_strategy": "structural"
     },
     {
       "id": "summarize_01",
       "category": "summarization",
       "lang": "en",
-      "prompt": "Summarize in one sentence: Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed. It focuses on developing computer programs that can access data and use it to learn for themselves. The process begins with observations or data, such as examples, direct experience, or instruction, in order to look for patterns in data and make better decisions in the future."
+      "prompt": "Summarize in one sentence: Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed. It focuses on developing computer programs that can access data and use it to learn for themselves. The process begins with observations or data, such as examples, direct experience, or instruction, in order to look for patterns in data and make better decisions in the future.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "summarize_02",
       "category": "summarization",
       "lang": "en",
-      "prompt": "Summarize in 2-3 sentences: The Apollo 11 mission was the spaceflight that first landed humans on the Moon. Commander Neil Armstrong and lunar module pilot Buzz Aldrin landed the Apollo Lunar Module Eagle on July 20, 1969. Armstrong became the first person to step onto the lunar surface six hours and 39 minutes later. Aldrin joined him 19 minutes later. They spent about two and a quarter hours together exploring the site they named Tranquility Base. Armstrong and Aldrin collected 47.5 pounds of lunar material to bring back to Earth."
+      "prompt": "Summarize in 2-3 sentences: The Apollo 11 mission was the spaceflight that first landed humans on the Moon. Commander Neil Armstrong and lunar module pilot Buzz Aldrin landed the Apollo Lunar Module Eagle on July 20, 1969. Armstrong became the first person to step onto the lunar surface six hours and 39 minutes later. Aldrin joined him 19 minutes later. They spent about two and a quarter hours together exploring the site they named Tranquility Base. Armstrong and Aldrin collected 47.5 pounds of lunar material to bring back to Earth.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "creative_01",
       "category": "creative",
       "lang": "en",
-      "prompt": "Write a short story in exactly 5 sentences about a robot discovering the ocean for the first time."
+      "prompt": "Write a short story in exactly 5 sentences about a robot discovering the ocean for the first time.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
       "id": "creative_02",
       "category": "creative",
       "lang": "en",
-      "prompt": "Come up with 5 creative startup ideas that combine AI with healthcare."
+      "prompt": "Write a haiku about artificial intelligence.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     },
     {
-      "id": "instruct_01",
-      "category": "instruction_following",
+      "id": "creative_03",
+      "category": "creative",
       "lang": "en",
-      "prompt": "List exactly 3 pros and 3 cons of remote work. Use bullet points."
-    },
-    {
-      "id": "instruct_02",
-      "category": "instruction_following",
-      "lang": "en",
-      "prompt": "Rewrite this sentence in passive voice: The cat chased the mouse across the kitchen floor."
-    },
-    {
-      "id": "prefill_stress_01",
-      "category": "long_context",
-      "lang": "en",
-      "prompt": "Read the following and answer the question at the end. The global semiconductor industry has experienced significant shifts over the past decade. Initially dominated by American and Japanese companies, the landscape has changed with the rise of TSMC in Taiwan and Samsung in South Korea as leading foundries. The COVID-19 pandemic exposed vulnerabilities in the supply chain, leading to widespread chip shortages that affected automotive, consumer electronics, and industrial sectors. In response, the United States passed the CHIPS Act to incentivize domestic semiconductor manufacturing. The European Union followed with its own European Chips Act. Meanwhile, China has been investing heavily in building its own chip-making capabilities despite export restrictions. Question: What event exposed vulnerabilities in the semiconductor supply chain?"
+      "prompt": "Write a persuasive paragraph arguing that cats make better pets than dogs.",
+      "ground_truth": null,
+      "eval_strategy": "none"
     }
   ]
 }

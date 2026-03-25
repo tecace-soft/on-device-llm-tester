@@ -94,6 +94,12 @@ jobs:
             --commit-sha ${{ github.sha }} `
             --branch ${{ github.ref_name }}
 
+      # ✨ Phase 4a — Response Validation (no API key, no external deps)
+      - name: Validate responses
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/response_validator.py --run-id ${{ github.run_id }}
+
       - name: Flush WAL checkpoint
         if: always()
         run: |
@@ -141,3 +147,6 @@ jobs:
           "" >> $env:GITHUB_STEP_SUMMARY
           "### DB Stats" >> $env:GITHUB_STEP_SUMMARY
           python scripts/ingest.py --summary-only >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "### Validation" >> $env:GITHUB_STEP_SUMMARY
+          python scripts/response_validator.py --summary-only >> $env:GITHUB_STEP_SUMMARY

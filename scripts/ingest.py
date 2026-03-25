@@ -37,6 +37,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 RESULTS_DIR = Path(os.getenv("RESULTS_DIR", str(_PROJECT_ROOT / "results")))
 DB_PATH     = Path(os.getenv("DB_PATH",     str(_PROJECT_ROOT / "api" / "data" / "llm_tester.db")))
+CONFIG_PATH = Path(os.getenv("CONFIG_PATH", str(_PROJECT_ROOT / "test_config.json")))
 
 
 # ── Shared DDL (single source of truth) ───────────────────────────────────────
@@ -145,9 +146,25 @@ def get_connection() -> sqlite3.Connection:
 
 def init_tables(con: sqlite3.Connection) -> None:
     con.executescript(_DDL)
+
+    # Phase 2 migration: run_id on results
     cols = {row[1] for row in con.execute("PRAGMA table_info(results)")}
     if "run_id" not in cols:
         con.execute("ALTER TABLE results ADD COLUMN run_id INTEGER REFERENCES runs(id)")
+
+    # Phase 4a migration: validation columns on results
+    if "validation_status" not in cols:
+        con.execute("ALTER TABLE results ADD COLUMN validation_status TEXT")
+    if "validation_detail" not in cols:
+        con.execute("ALTER TABLE results ADD COLUMN validation_detail TEXT")
+
+    # Phase 4a migration: ground_truth, eval_strategy on prompts
+    prompt_cols = {row[1] for row in con.execute("PRAGMA table_info(prompts)")}
+    if "ground_truth" not in prompt_cols:
+        con.execute("ALTER TABLE prompts ADD COLUMN ground_truth TEXT")
+    if "eval_strategy" not in prompt_cols:
+        con.execute("ALTER TABLE prompts ADD COLUMN eval_strategy TEXT NOT NULL DEFAULT 'none'")
+
     con.commit()
 
 
@@ -188,6 +205,65 @@ def upsert_prompt(con: sqlite3.Connection, prompt_id: str, category: str,
     """, (prompt_id, category, lang, prompt_text))
     row = con.execute("SELECT id FROM prompts WHERE prompt_id=?", (prompt_id,)).fetchone()
     return row[0]
+
+
+# ── Phase 4a: ground_truth / eval_strategy sync from test_config.json ─────────
+
+def _load_config_prompt_map(config_path: Path) -> dict[str, dict]:
+    """Load test_config.json and return {prompt_id: {ground_truth, eval_strategy}}."""
+    if not config_path.exists():
+        logger.warning("Config file not found: %s — skipping ground_truth sync", config_path)
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Config parse failed: %s — skipping ground_truth sync", e)
+        return {}
+
+    result = {}
+    for p in config.get("prompts", []):
+        pid = p.get("id")
+        if pid:
+            result[pid] = {
+                "ground_truth": p.get("ground_truth"),
+                "eval_strategy": p.get("eval_strategy", "none"),
+            }
+    return result
+
+
+def sync_ground_truth(con: sqlite3.Connection, config_path: Path) -> int:
+    """Update prompts table with ground_truth and eval_strategy from test_config.json.
+
+    Returns number of prompts updated.
+    """
+    prompt_map = _load_config_prompt_map(config_path)
+    if not prompt_map:
+        return 0
+
+    updated = 0
+    for prompt_id, vals in prompt_map.items():
+        ground_truth = vals["ground_truth"]
+        eval_strategy = vals["eval_strategy"]
+
+        # Validate eval_strategy
+        valid_strategies = {"deterministic", "deterministic_with_fallback", "structural", "none"}
+        if eval_strategy not in valid_strategies:
+            logger.warning("Unknown eval_strategy '%s' for prompt '%s' — falling back to 'none'",
+                           eval_strategy, prompt_id)
+            eval_strategy = "none"
+
+        cur = con.execute("""
+            UPDATE prompts
+            SET ground_truth = ?, eval_strategy = ?
+            WHERE prompt_id = ?
+        """, (ground_truth, eval_strategy, prompt_id))
+        if cur.rowcount:
+            updated += 1
+
+    con.commit()
+    logger.info("Ground truth synced: %d prompts updated from %s", updated, config_path)
+    return updated
 
 
 # ── runs table ────────────────────────────────────────────────────────────────
@@ -379,6 +455,23 @@ def print_summary(con: sqlite3.Connection) -> None:
         print(f"Latest run          : {run_row['run_id']} ({run_row['trigger']}) "
               f"branch={run_row['branch']} started={run_row['started_at']} status={run_row['status']}")
 
+    # Phase 4a: validation summary
+    val_row = con.execute("""
+        SELECT
+            COUNT(validation_status)                                        AS validated,
+            SUM(CASE WHEN validation_status='pass'      THEN 1 ELSE 0 END) AS v_pass,
+            SUM(CASE WHEN validation_status='fail'      THEN 1 ELSE 0 END) AS v_fail,
+            SUM(CASE WHEN validation_status='warn'      THEN 1 ELSE 0 END) AS v_warn,
+            SUM(CASE WHEN validation_status='uncertain' THEN 1 ELSE 0 END) AS v_uncertain,
+            SUM(CASE WHEN validation_status='skip'      THEN 1 ELSE 0 END) AS v_skip
+        FROM results
+    """).fetchone()
+    validated = val_row[0] or 0
+    if validated > 0:
+        print(f"Validation          : {validated} validated "
+              f"(pass={val_row[1]}, fail={val_row[2]}, warn={val_row[3]}, "
+              f"uncertain={val_row[4]}, skip={val_row[5]})")
+
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -386,6 +479,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Ingest JSON results into SQLite DB")
     p.add_argument("--results-dir", default=None)
     p.add_argument("--db-path", default=None)
+    p.add_argument("--config-path", default=None,
+                   help="Path to test_config.json for ground_truth sync")
     p.add_argument("--run-id", default=None)
     p.add_argument("--trigger", default="manual")
     p.add_argument("--commit-sha", default=None)
@@ -403,6 +498,8 @@ def main() -> None:
     if args.db_path:
         global DB_PATH
         DB_PATH = Path(args.db_path)
+
+    config_path = Path(args.config_path) if args.config_path else CONFIG_PATH
 
     con = get_connection()
     init_tables(con)
@@ -427,6 +524,9 @@ def main() -> None:
         logger.fatal("Ingest failed: %s", e)
         sys.exit(1)
 
+    # Phase 4a: sync ground_truth + eval_strategy from test_config.json
+    gt_updated = sync_ground_truth(con, config_path)
+
     if run_pk is not None:
         # FIX(H): Mark as error if nothing was inserted (phantom run prevention)
         if inserted == 0 and errors == 0 and skipped == 0:
@@ -439,6 +539,8 @@ def main() -> None:
         logger.info("Run finished run_id=%s status=%s", args.run_id, status)
 
     print(f"\nIngest complete — inserted: {inserted}, skipped: {skipped}, errors: {errors}")
+    if gt_updated:
+        print(f"Ground truth synced: {gt_updated} prompts")
     con.close()
 
 

@@ -96,14 +96,34 @@ ALTER TABLE results ADD COLUMN run_id INTEGER REFERENCES runs(id);
 """
 
 
+async def _migrate_columns(db: aiosqlite.Connection) -> None:
+    """Idempotent column migrations for all phases."""
+    # Phase 2: run_id on results
+    async with db.execute("PRAGMA table_info(results)") as cur:
+        result_cols = {row[1] async for row in cur}
+    if "run_id" not in result_cols:
+        await db.execute(_MIGRATE_RUN_ID)
+
+    # Phase 4a: validation_status, validation_detail on results
+    if "validation_status" not in result_cols:
+        await db.execute("ALTER TABLE results ADD COLUMN validation_status TEXT")
+    if "validation_detail" not in result_cols:
+        await db.execute("ALTER TABLE results ADD COLUMN validation_detail TEXT")
+
+    # Phase 4a: ground_truth, eval_strategy on prompts
+    async with db.execute("PRAGMA table_info(prompts)") as cur:
+        prompt_cols = {row[1] async for row in cur}
+    if "ground_truth" not in prompt_cols:
+        await db.execute("ALTER TABLE prompts ADD COLUMN ground_truth TEXT")
+    if "eval_strategy" not in prompt_cols:
+        await db.execute("ALTER TABLE prompts ADD COLUMN eval_strategy TEXT NOT NULL DEFAULT 'none'")
+
+    await db.commit()
+
+
 async def _init_tables(db: aiosqlite.Connection) -> None:
     await db.executescript(_DDL)
-    # Idempotent migration: add run_id column if it doesn't exist yet
-    async with db.execute("PRAGMA table_info(results)") as cur:
-        cols = {row[1] async for row in cur}
-    if "run_id" not in cols:
-        await db.execute(_MIGRATE_RUN_ID)
-    await db.commit()
+    await _migrate_columns(db)
 
 
 async def cleanup_zombie_runs(db: aiosqlite.Connection) -> None:
