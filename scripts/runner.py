@@ -17,6 +17,9 @@ RESULTS_DIR = "files/results"
 MAX_ADB_RETRIES = 3
 ADB_RETRY_DELAY = 2
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOCAL_RESULTS_DIR = os.path.join(_PROJECT_ROOT, "results")
+
 
 # ── ADB helpers with retry ────────────────────────────────────────────────────
 
@@ -33,7 +36,6 @@ def adb_run(
     cmd = ["adb"]
     if serial:
         cmd.extend(["-s", serial])
-    # Strip leading "adb" from args if present (callers may include it)
     tail = args[1:] if args and args[0] == "adb" else args
     cmd.extend(tail)
 
@@ -108,6 +110,83 @@ def _escape_for_adb_shell(text: str) -> str:
     return f"'{escaped}'"
 
 
+# ── PC-side error JSON generation ─────────────────────────────────────────────
+
+def _get_device_info(serial: str | None = None) -> dict:
+    """Fetch device info via ADB for error JSON. Returns partial info on failure."""
+    info = {
+        "manufacturer": "", "model": "", "product": "",
+        "soc": "", "android_version": "", "sdk_int": 0,
+        "cpu_cores": 0, "max_heap_mb": 0,
+    }
+    try:
+        for key, prop in [
+            ("manufacturer", "ro.product.manufacturer"),
+            ("model", "ro.product.model"),
+            ("product", "ro.product.name"),
+            ("soc", "ro.hardware.chipname"),
+            ("android_version", "ro.build.version.release"),
+            ("sdk_int", "ro.build.version.sdk"),
+        ]:
+            res = adb_shell(f"getprop {prop}", serial=serial)
+            val = (res.stdout or "").strip()
+            if key == "sdk_int":
+                info[key] = int(val) if val.isdigit() else 0
+            else:
+                info[key] = val
+    except Exception as e:
+        logger.warning("Failed to fetch device info: %s", e)
+    return info
+
+
+def save_pc_error_json(
+    serial: str | None,
+    model_path: str,
+    model_name: str,
+    backend: str,
+    prompt_id: str,
+    category: str,
+    lang: str,
+    prompt_text: str,
+    error_reason: str,
+) -> None:
+    """Write an error JSON on PC side when device fails to produce a result.
+
+    Saved to results/{device_model}/{model_name}/ so ingest.py picks it up
+    automatically. This ensures timeout/crash failures are tracked in DB
+    and reflected in validation stats.
+    """
+    device_info = _get_device_info(serial)
+    device_model = (device_info.get("model") or "unknown_device").replace("/", "_")
+    safe_model = model_name.replace("/", "_")
+
+    target_dir = os.path.join(LOCAL_RESULTS_DIR, device_model, safe_model)
+    os.makedirs(target_dir, exist_ok=True)
+
+    timestamp = int(datetime.now().timestamp() * 1000)
+    filename = f"error_{prompt_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    data = {
+        "status": "error",
+        "prompt_id": prompt_id,
+        "prompt_category": category,
+        "prompt_lang": lang,
+        "model_path": model_path,
+        "model_name": model_name,
+        "backend": backend,
+        "device": device_info,
+        "prompt": prompt_text,
+        "response": "",
+        "error": error_reason,
+        "timestamp": timestamp,
+    }
+
+    filepath = os.path.join(target_dir, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    logger.info("[ERROR JSON] %s → %s", prompt_id, filepath)
+
+
 # ── Core Test Batch ───────────────────────────────────────────────────────────
 
 def run_test_batch(config_path: str = "test_config.json", serial: str | None = None) -> int:
@@ -173,6 +252,11 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                 if adb_failure_streak >= MAX_ADB_FAILURES:
                     logger.error("ADB disconnected — %d consecutive failures. Aborting.", MAX_ADB_FAILURES)
                     return 2
+                save_pc_error_json(
+                    serial, model_path, model_name, backend,
+                    prompt_id, category, lang, prompt_text,
+                    "ADB connection failure — could not check device status",
+                )
                 fail_count += 1
                 continue
 
@@ -226,7 +310,18 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
             if success:
                 success_count += 1
             else:
-                logger.warning("[FAILED] [%s] %s — no response or error", prompt_id, model_name)
+                elapsed = time.time() - start_time
+                if elapsed >= timeout_sec:
+                    reason = f"Timeout after {timeout_sec}s — no response from device"
+                elif adb_failure_streak > 0:
+                    reason = "ADB connection lost during test"
+                else:
+                    reason = "App error or crash — no result file generated"
+                logger.warning("[FAILED] [%s] %s — %s", prompt_id, model_name, reason)
+                save_pc_error_json(
+                    serial, model_path, model_name, backend,
+                    prompt_id, category, lang, prompt_text, reason,
+                )
                 fail_count += 1
 
             time.sleep(5)
@@ -266,8 +361,6 @@ def run_all_devices(config_path: str, parallel: bool = False) -> dict[str, int]:
     results = {}
 
     if parallel:
-        # subprocess로 디바이스별 runner.py 병렬 실행
-        # 병렬 모드는 로그가 혼합되므로 디바이스별 로그 파일 분리 필수
         os.makedirs("logs", exist_ok=True)
         procs = {}
         log_files = {}
@@ -290,13 +383,9 @@ def run_all_devices(config_path: str, parallel: bool = False) -> dict[str, int]:
             logger.info("[PARALLEL] %s %s (exit=%d, log=logs/%s_runner.log)",
                         serial, status, proc.returncode, serial)
     else:
-        # 순차 실행: per-device (thermal check → test → sync) 파이프라인
-        # 디바이스 A 테스트 완료 → 즉시 A에서 결과 sync → 디바이스 B 테스트
-        # 이유: B 테스트 중 A의 앱 샌드박스 결과가 유실될 위험 방지
         for d in devices:
             logger.info("=== Device: %s (%s) ===", d["serial"], d["model"])
 
-            # Thermal guard: 온도가 임계값 이하인지 확인
             wait_for_cool_down(d["serial"], d["model"])
 
             exit_code = run_test_batch(config_path, serial=d["serial"])
@@ -304,15 +393,13 @@ def run_all_devices(config_path: str, parallel: bool = False) -> dict[str, int]:
             status = "SUCCESS" if exit_code == 0 else "FAILED"
             logger.info("[SEQ] %s %s (exit=%d)", d["serial"], status, exit_code)
 
-            # 즉시 sync: 이 디바이스 결과를 PC로 가져옴
-            if exit_code != 2:  # 전체 실패가 아닌 경우만 sync
+            if exit_code != 2:
                 logger.info("[SEQ] Syncing results from %s...", d["serial"])
                 subprocess.run(
                     [sys.executable, "scripts/sync_results.py", "--serial", d["serial"]],
                     check=False,
                 )
 
-    # 요약 출력
     success = sum(1 for v in results.values() if v == 0)
     logger.info("=== Multi-Device Summary: %d/%d succeeded ===", success, len(results))
     return results
@@ -352,6 +439,6 @@ if __name__ == "__main__":
             sys.exit(1)
         elif exit_code == 1:
             logger.warning("Some tests failed — continuing pipeline")
-            sys.exit(0)  # Partial success is OK for CI pipeline
+            sys.exit(0)
         else:
             sys.exit(0)
