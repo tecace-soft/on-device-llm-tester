@@ -11,10 +11,22 @@ import re
 
 
 def _extract_fenced_block(response: str, lang: str = "") -> str:
-    """Extract content from markdown fenced code block, or return raw text."""
+    """Extract content from markdown fenced code block, or return raw text.
+
+    Also handles SLM double-escaping where literal \\n appears instead of newlines.
+    """
     pattern = rf'```(?:{lang})?\s*([\s\S]*?)```'
     match = re.search(pattern, response)
-    return match.group(1).strip() if match else response.strip()
+    text = match.group(1).strip() if match else response.strip()
+
+    # Fix SLM double-escaping: literal \\n → real newline
+    if '\\n' in text and '\n' not in text:
+        text = text.replace('\\n', '\n')
+    # Also handle \\t → tab
+    if '\\t' in text and '\t' not in text:
+        text = text.replace('\\t', '\t')
+
+    return text
 
 
 def eval_json_structure(response: str, ground_truth: str | None = None) -> tuple[str, str]:

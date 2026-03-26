@@ -14,6 +14,9 @@ def eval_math(response: str, ground_truth: str) -> tuple[str, str]:
     Strategy: extract all numbers from response, check from last to first
     (final answer is typically the last number in "237 + 485 = 722").
 
+    If ground_truth is not numeric (e.g. "yes"/"no"), falls back to
+    containment matching.
+
     Returns:
         (status, detail) where status is 'pass' | 'fail'
     """
@@ -23,7 +26,12 @@ def eval_math(response: str, ground_truth: str) -> tuple[str, str]:
     try:
         expected = float(ground_truth)
     except ValueError:
-        return "fail", f"Invalid ground_truth: {ground_truth}"
+        # Non-numeric ground_truth (e.g. "yes", "no") → containment match
+        status, detail = eval_containment(response, ground_truth)
+        # Convert uncertain → fail for deterministic strategy
+        if status == "uncertain":
+            return "fail", detail.replace("uncertain", "fail").replace("needs LLM judge (Phase 4b)", "containment failed")
+        return status, detail
 
     # Normalize response: lowercase + collapse whitespace
     norm_response = response.lower().strip()
@@ -61,6 +69,9 @@ def eval_containment(response: str, ground_truth: str) -> tuple[str, str]:
         return "uncertain", "No ground_truth provided — cannot evaluate"
 
     def normalize(text: str) -> str:
+        import unicodedata
+        # Normalize unicode (NFKD decomposes ₂→2, ₃→3, etc.)
+        text = unicodedata.normalize('NFKC', text)
         text = text.lower().strip()
         text = re.sub(r'\s+', ' ', text)
         # Strip common English articles — but only when surrounded by word boundaries

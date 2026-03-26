@@ -137,8 +137,18 @@ class TestEvalMath:
         assert status == "fail"
 
     def test_invalid_ground_truth(self):
+        # Non-numeric ground_truth falls back to containment
         status, _ = eval_math("42", "not_a_number")
-        assert status == "fail"
+        assert status == "fail"  # "not_a_number" not in "42"
+
+    def test_yes_no_ground_truth(self):
+        # "yes"/"no" ground_truth should use containment fallback
+        status, _ = eval_math("no", "yes")
+        assert status == "fail"  # "yes" not in "no"
+
+    def test_yes_no_match(self):
+        status, _ = eval_math("yes", "yes")
+        assert status == "pass"
 
     def test_float_subtraction(self):
         # 9.11 - 9.9 = -0.79
@@ -179,6 +189,11 @@ class TestEvalContainment:
 
     def test_h2o_formula(self):
         status, _ = eval_containment("The chemical formula for water is H2O.", "H2O")
+        assert status == "pass"
+
+    def test_h2o_unicode_subscript(self):
+        # SLM outputs H₂O with unicode subscript — should still match H2O
+        status, _ = eval_containment("The chemical formula for water is H₂O.", "H2O")
         assert status == "pass"
 
     def test_multi_keyword(self):
@@ -290,6 +305,12 @@ class Stack:
 
     def test_raw_code_no_fence(self):
         code = "def add(a, b):\n    return a + b"
+        status, _ = eval_python_syntax(code)
+        assert status == "pass"
+
+    def test_double_escaped_newlines(self):
+        # SLM sometimes outputs \\n instead of real newlines
+        code = '```python\\ndef factorial(n):\\n    if n == 0:\\n        return 1\\n    return n * factorial(n-1)\\n```'
         status, _ = eval_python_syntax(code)
         assert status == "pass"
 
