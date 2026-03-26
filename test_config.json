@@ -2,7 +2,7 @@
   "timeout_sec": 60,
   "models": [
     {
-      "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
+      "path": "/data/local/tmp/llm_test/models/gemma-3-270m-it-int8.task",
       "max_tokens": 1024,
       "backend": "CPU"
     }
