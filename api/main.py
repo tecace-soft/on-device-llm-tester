@@ -5,6 +5,7 @@ import os
 from typing import List, Optional
 
 from dotenv import load_dotenv
+
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../.env"))
 
 import aiosqlite
@@ -14,13 +15,32 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from db import lifespan
 from loader import list_categories, list_devices, list_models, list_runs, load_all
+
 from schemas import (
-    ApiError, ApiSuccess, CategorySummary, CompareResult, DeviceCompareResult,
-    ModelSummary, PaginationMeta, ResultItem, RunItem, SummaryStats,
+    ApiError,
+    ApiSuccess,
+    CategorySummary,
+    CategoryValidation,
+    CompareResult,
+    DeviceCompareResult,
+    ModelSummary,
+    ModelValidation,
+    PaginationMeta,
+    ResultItem,
+    RunItem,
+    SummaryStats,
+    ValidationSummary,
 )
+
 from stats import (
-    compute_by_category, compute_by_model, compute_compare,
-    compute_compare_devices, compute_summary,
+    compute_by_category,
+    compute_by_model,
+    compute_compare,
+    compute_compare_devices,
+    compute_summary,
+    compute_validation_summary,
+    compute_validation_by_category,
+    compute_validation_by_model,
 )
 
 # ── Logging ────────────────────────────────────────────────────────────────────
@@ -50,6 +70,7 @@ app.add_middleware(
 
 # ── Auth middleware ────────────────────────────────────────────────────────────
 
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     if API_KEY and request.url.path.startswith("/api"):
@@ -64,6 +85,7 @@ async def auth_middleware(request: Request, call_next):
 
 # ── Exception handler ─────────────────────────────────────────────────────────
 
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled error: %s", exc)
@@ -75,11 +97,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def _db(request: Request) -> aiosqlite.Connection:
     return request.app.state.db
 
 
 # ── /health ───────────────────────────────────────────────────────────────────
+
 
 @app.get("/health")
 async def health():
@@ -87,6 +111,7 @@ async def health():
 
 
 # ── /api/results ──────────────────────────────────────────────────────────────
+
 
 @app.get("/api/results", response_model=ApiSuccess[List[ResultItem]])
 async def get_results(
@@ -113,7 +138,9 @@ async def get_results(
     )
     return ApiSuccess(
         data=rows,
-        meta=PaginationMeta(total=total, limit=limit, offset=offset, has_more=offset + limit < total),
+        meta=PaginationMeta(
+            total=total, limit=limit, offset=offset, has_more=offset + limit < total
+        ),
     )
 
 
@@ -144,7 +171,9 @@ async def get_by_model(
     category: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
 ):
-    data = await compute_by_model(_db(request), device=device, category=category, backend=backend)
+    data = await compute_by_model(
+        _db(request), device=device, category=category, backend=backend
+    )
     return ApiSuccess(data=data)
 
 
@@ -155,7 +184,9 @@ async def get_by_category(
     model: Optional[str] = Query(None),
     backend: Optional[str] = Query(None),
 ):
-    data = await compute_by_category(_db(request), device=device, model=model, backend=backend)
+    data = await compute_by_category(
+        _db(request), device=device, model=model, backend=backend
+    )
     return ApiSuccess(data=data)
 
 
@@ -169,29 +200,44 @@ async def get_compare(
     model_names = [m.strip() for m in models.split(",") if m.strip()]
     if len(model_names) < 2:
         raise HTTPException(status_code=400, detail="Provide at least 2 model names")
-    data = await compute_compare(_db(request), model_names=model_names, device=device, backend=backend)
+    data = await compute_compare(
+        _db(request), model_names=model_names, device=device, backend=backend
+    )
     return ApiSuccess(data=data)
 
 
 # ── /api/results/compare-devices (Phase 3) ────────────────────────────────────
 
-@app.get("/api/results/compare-devices", response_model=ApiSuccess[List[DeviceCompareResult]])
+
+@app.get(
+    "/api/results/compare-devices", response_model=ApiSuccess[List[DeviceCompareResult]]
+)
 async def get_compare_devices(
     request: Request,
-    devices: str = Query(..., description="Comma-separated device model names (e.g. SM-S931U,SM-S926U)"),
-    model: Optional[str] = Query(None, description="Model name to compare across devices"),
+    devices: str = Query(
+        ..., description="Comma-separated device model names (e.g. SM-S931U,SM-S926U)"
+    ),
+    model: Optional[str] = Query(
+        None, description="Model name to compare across devices"
+    ),
     backend: Optional[str] = Query(None),
 ):
     device_models = [d.strip() for d in devices.split(",") if d.strip()]
     if len(device_models) < 2:
-        raise HTTPException(status_code=400, detail="Provide at least 2 device model names")
+        raise HTTPException(
+            status_code=400, detail="Provide at least 2 device model names"
+        )
     data = await compute_compare_devices(
-        _db(request), device_models=device_models, model=model, backend=backend,
+        _db(request),
+        device_models=device_models,
+        model=model,
+        backend=backend,
     )
     return ApiSuccess(data=data)
 
 
 # ── /api/runs ──────────────────────────────────────────────────────────────────
+
 
 @app.get("/api/runs", response_model=ApiSuccess[List[RunItem]])
 async def get_runs(
@@ -244,14 +290,17 @@ async def get_runs(
     ]
     return ApiSuccess(
         data=items,
-        meta=PaginationMeta(total=total, limit=limit, offset=offset, has_more=offset + limit < total),
+        meta=PaginationMeta(
+            total=total, limit=limit, offset=offset, has_more=offset + limit < total
+        ),
     )
 
 
 @app.get("/api/runs/{run_id}", response_model=ApiSuccess[RunItem])
 async def get_run(request: Request, run_id: str):
     db = _db(request)
-    async with db.execute("""
+    async with db.execute(
+        """
         SELECT
             r.id, r.run_id, r.trigger, r.commit_sha, r.branch,
             r.started_at, r.finished_at, r.status,
@@ -260,23 +309,27 @@ async def get_run(request: Request, run_id: str):
         LEFT JOIN results res ON res.run_id = r.id
         WHERE r.run_id = ?
         GROUP BY r.id
-    """, (run_id,)) as cur:
+    """,
+        (run_id,),
+    ) as cur:
         row = await cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
-    return ApiSuccess(data=RunItem(
-        id=row["id"],
-        run_id=row["run_id"],
-        trigger=row["trigger"],
-        commit_sha=row["commit_sha"],
-        branch=row["branch"],
-        started_at=row["started_at"],
-        finished_at=row["finished_at"],
-        status=row["status"],
-        result_count=row["result_count"],
-    ))
+    return ApiSuccess(
+        data=RunItem(
+            id=row["id"],
+            run_id=row["run_id"],
+            trigger=row["trigger"],
+            commit_sha=row["commit_sha"],
+            branch=row["branch"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+            status=row["status"],
+            result_count=row["result_count"],
+        )
+    )
 
 
 @app.get("/api/runs/{run_id}/summary", response_model=ApiSuccess[SummaryStats])
@@ -293,6 +346,7 @@ async def get_run_summary(request: Request, run_id: str):
 
 
 # ── /api/models, /api/devices, /api/categories, /api/runs-list ────────────────
+
 
 @app.get("/api/models", response_model=ApiSuccess[List[str]])
 async def get_models(request: Request, device: Optional[str] = Query(None)):
@@ -316,6 +370,7 @@ async def get_run_ids(request: Request):
 
 
 # ── /api/export/csv ───────────────────────────────────────────────────────────
+
 
 @app.get("/api/export/csv")
 async def export_csv(
@@ -342,53 +397,78 @@ async def export_csv(
         raise HTTPException(status_code=404, detail="No data matching filters")
 
     fieldnames = [
-        "status", "prompt_id", "prompt_category", "prompt_lang",
-        "model_name", "backend",
-        "device_manufacturer", "device_model", "device_soc", "android_version",
-        "prompt", "response",
-        "latency_ms", "init_time_ms",
-        "ttft_ms", "prefill_time_ms", "decode_time_ms",
-        "input_token_count", "output_token_count",
-        "prefill_tps", "decode_tps",
-        "peak_java_memory_mb", "peak_native_memory_mb",
-        "itl_p50_ms", "itl_p95_ms", "itl_p99_ms",
-        "timestamp", "run_id",
+        "status",
+        "prompt_id",
+        "prompt_category",
+        "prompt_lang",
+        "model_name",
+        "backend",
+        "device_manufacturer",
+        "device_model",
+        "device_soc",
+        "android_version",
+        "prompt",
+        "response",
+        "latency_ms",
+        "init_time_ms",
+        "ttft_ms",
+        "prefill_time_ms",
+        "decode_time_ms",
+        "input_token_count",
+        "output_token_count",
+        "prefill_tps",
+        "decode_tps",
+        "peak_java_memory_mb",
+        "peak_native_memory_mb",
+        "itl_p50_ms",
+        "itl_p95_ms",
+        "itl_p99_ms",
+        "timestamp",
+        "run_id",
     ]
 
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for r in rows:
-        writer.writerow({
-            "status": r.status,
-            "prompt_id": r.prompt_id,
-            "prompt_category": r.prompt_category,
-            "prompt_lang": r.prompt_lang,
-            "model_name": r.model_name,
-            "backend": r.backend,
-            "device_manufacturer": r.device.manufacturer,
-            "device_model": r.device.model,
-            "device_soc": r.device.soc,
-            "android_version": r.device.android_version,
-            "prompt": r.prompt,
-            "response": r.response,
-            "latency_ms": r.latency_ms,
-            "init_time_ms": r.init_time_ms,
-            "ttft_ms": r.metrics.ttft_ms if r.metrics else None,
-            "prefill_time_ms": r.metrics.prefill_time_ms if r.metrics else None,
-            "decode_time_ms": r.metrics.decode_time_ms if r.metrics else None,
-            "input_token_count": r.metrics.input_token_count if r.metrics else None,
-            "output_token_count": r.metrics.output_token_count if r.metrics else None,
-            "prefill_tps": r.metrics.prefill_tps if r.metrics else None,
-            "decode_tps": r.metrics.decode_tps if r.metrics else None,
-            "peak_java_memory_mb": r.metrics.peak_java_memory_mb if r.metrics else None,
-            "peak_native_memory_mb": r.metrics.peak_native_memory_mb if r.metrics else None,
-            "itl_p50_ms": r.metrics.itl_p50_ms if r.metrics else None,
-            "itl_p95_ms": r.metrics.itl_p95_ms if r.metrics else None,
-            "itl_p99_ms": r.metrics.itl_p99_ms if r.metrics else None,
-            "timestamp": r.timestamp,
-            "run_id": r.run_id,
-        })
+        writer.writerow(
+            {
+                "status": r.status,
+                "prompt_id": r.prompt_id,
+                "prompt_category": r.prompt_category,
+                "prompt_lang": r.prompt_lang,
+                "model_name": r.model_name,
+                "backend": r.backend,
+                "device_manufacturer": r.device.manufacturer,
+                "device_model": r.device.model,
+                "device_soc": r.device.soc,
+                "android_version": r.device.android_version,
+                "prompt": r.prompt,
+                "response": r.response,
+                "latency_ms": r.latency_ms,
+                "init_time_ms": r.init_time_ms,
+                "ttft_ms": r.metrics.ttft_ms if r.metrics else None,
+                "prefill_time_ms": r.metrics.prefill_time_ms if r.metrics else None,
+                "decode_time_ms": r.metrics.decode_time_ms if r.metrics else None,
+                "input_token_count": r.metrics.input_token_count if r.metrics else None,
+                "output_token_count": r.metrics.output_token_count
+                if r.metrics
+                else None,
+                "prefill_tps": r.metrics.prefill_tps if r.metrics else None,
+                "decode_tps": r.metrics.decode_tps if r.metrics else None,
+                "peak_java_memory_mb": r.metrics.peak_java_memory_mb
+                if r.metrics
+                else None,
+                "peak_native_memory_mb": r.metrics.peak_native_memory_mb
+                if r.metrics
+                else None,
+                "itl_p50_ms": r.metrics.itl_p50_ms if r.metrics else None,
+                "itl_p95_ms": r.metrics.itl_p95_ms if r.metrics else None,
+                "itl_p99_ms": r.metrics.itl_p99_ms if r.metrics else None,
+                "timestamp": r.timestamp,
+                "run_id": r.run_id,
+            }
+        )
 
     buf.seek(0)
     return StreamingResponse(
@@ -396,3 +476,47 @@ async def export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=llm_results.csv"},
     )
+
+
+# ── Response Validation endpoints (Phase 4a) ─────────────────────────────────
+
+
+@app.get("/api/validation/summary", response_model=ApiSuccess[ValidationSummary])
+async def get_validation_summary(
+    request: Request,
+    device: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    run_id: Optional[str] = Query(None),
+):
+    data = await compute_validation_summary(
+        _db(request),
+        device=device,
+        model=model,
+        run_id=run_id,
+    )
+    return ApiSuccess(data=data)
+
+
+@app.get(
+    "/api/validation/by-category", response_model=ApiSuccess[List[CategoryValidation]]
+)
+async def get_validation_by_category(
+    request: Request,
+    device: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+):
+    data = await compute_validation_by_category(
+        _db(request),
+        device=device,
+        model=model,
+    )
+    return ApiSuccess(data=data)
+
+
+@app.get("/api/validation/by-model", response_model=ApiSuccess[List[ModelValidation]])
+async def get_validation_by_model(
+    request: Request,
+    device: Optional[str] = Query(None),
+):
+    data = await compute_validation_by_model(_db(request), device=device)
+    return ApiSuccess(data=data)
