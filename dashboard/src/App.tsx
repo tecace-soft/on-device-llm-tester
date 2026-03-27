@@ -8,6 +8,7 @@ const Overview      = lazy(() => import('@/pages/Overview'))
 const Performance   = lazy(() => import('@/pages/Performance'))
 const Compare       = lazy(() => import('@/pages/Compare'))
 const DeviceCompare = lazy(() => import('@/pages/DeviceCompare'))
+const Validation    = lazy(() => import('@/pages/Validation'))
 const Responses     = lazy(() => import('@/pages/Responses'))
 const RawData       = lazy(() => import('@/pages/RawData'))
 const RunHistory    = lazy(() => import('@/pages/RunHistory'))
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/performance"    element={<Performance />} />
             <Route path="/compare"        element={<Compare />} />
             <Route path="/device-compare" element={<DeviceCompare />} />
+            <Route path="/validation"     element={<Validation />} />
             <Route path="/responses"      element={<Responses />} />
             <Route path="/raw"            element={<RawData />} />
             <Route path="/runs"           element={<RunHistory />} />

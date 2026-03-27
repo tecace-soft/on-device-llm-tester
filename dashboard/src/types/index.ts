@@ -151,3 +151,34 @@ export interface Filters {
   limit: number
   offset: number
 }
+
+// ── Response Validation (Phase 4a) ──────────────────────────────────────────
+
+export type ValidationStatus = 'pass' | 'fail' | 'warn' | 'uncertain' | 'skip'
+
+export interface ValidationSummary {
+  total: number
+  pass_count: number
+  fail_count: number
+  warn_count: number
+  uncertain_count: number
+  skip_count: number
+  pass_rate: number
+}
+
+export interface CategoryValidation {
+  category: string
+  pass_count: number
+  fail_count: number
+  warn_count: number
+  uncertain_count: number
+  total: number
+}
+
+export interface ModelValidation {
+  model_name: string
+  pass_rate: number
+  fail_rate: number
+  truncation_rate: number
+  total: number
+}
