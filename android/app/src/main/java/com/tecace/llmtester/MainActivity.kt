@@ -6,7 +6,6 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -16,7 +15,7 @@ import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
     private val TAG = "LLM_TESTER"
-    private lateinit var llmRunner: LlmRunner
+    private var engine: InferenceEngine? = null
 
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,8 +25,6 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "UNCAUGHT on thread [${thread.name}]: ${throwable.message}")
             saveError("UNCAUGHT", throwable.stackTraceToString())
         }
-
-        llmRunner = LlmRunner(this)
 
         if (!intent.hasExtra("input_prompt") || !intent.hasExtra("model_path")) {
             Log.w(TAG, ">>> No test intent extras found. Skipping (likely -S restart ghost launch).")
@@ -39,10 +36,11 @@ class MainActivity : AppCompatActivity() {
         val modelPath = intent.getStringExtra("model_path")!!
         val maxTokens = intent.getIntExtra("max_tokens", 1024)
         val backendStr = intent.getStringExtra("backend") ?: "CPU"
-        val backend = when (backendStr.uppercase()) {
-            "GPU" -> LlmInference.Backend.GPU
-            else  -> LlmInference.Backend.CPU
-        }
+        val engineType = intent.getStringExtra("engine") ?: autoDetectEngine(modelPath)
+        val engineParamsJson = intent.getStringExtra("engine_params") ?: "{}"
+
+        val engineParams = parseEngineParams(engineParamsJson).toMutableMap()
+        engineParams.putIfAbsent("backend", backendStr)
 
         val promptId = intent.getStringExtra("prompt_id") ?: ""
         val promptCategory = intent.getStringExtra("prompt_category") ?: ""
@@ -52,13 +50,17 @@ class MainActivity : AppCompatActivity() {
         Log.d(TAG, "Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.PRODUCT})")
         Log.d(TAG, "SOC: ${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}")
         Log.d(TAG, "Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
+        Log.d(TAG, "Engine: $engineType")
         Log.d(TAG, "PromptID: $promptId | Category: $promptCategory | Lang: $promptLang")
         Log.d(TAG, "Prompt: $prompt")
         Log.d(TAG, "ModelPath: $modelPath")
         Log.d(TAG, "MaxTokens: $maxTokens")
         Log.d(TAG, "Backend: $backendStr")
+        Log.d(TAG, "EngineParams: $engineParamsJson")
         Log.d(TAG, "Available processors: ${Runtime.getRuntime().availableProcessors()}")
         Log.d(TAG, "Max heap: ${Runtime.getRuntime().maxMemory() / 1024 / 1024} MB")
+
+        engine = createEngine(engineType)
 
         lifecycleScope.launch {
             try {
@@ -66,26 +68,62 @@ class MainActivity : AppCompatActivity() {
                 Log.d(TAG, "Model file exists: ${modelFile.exists()}")
                 Log.d(TAG, "Model file size: ${modelFile.length() / 1024 / 1024} MB")
 
-                Log.d(TAG, ">>> LlmRunner.init() START")
-                llmRunner.init(modelPath, maxTokens, backend)
-                Log.d(TAG, ">>> LlmRunner.init() DONE — ${llmRunner.initTimeMs}ms")
+                val activeEngine = engine!!
+
+                Log.d(TAG, ">>> ${activeEngine.engineName}.init() START")
+                activeEngine.init(modelPath, maxTokens, engineParams)
+                Log.d(TAG, ">>> ${activeEngine.engineName}.init() DONE — ${activeEngine.initTimeMs}ms")
 
                 val inputTokenCount = estimateTokenCount(prompt)
                 Log.d(TAG, ">>> Estimated input tokens: $inputTokenCount")
 
-                Log.d(TAG, ">>> LlmRunner.generate() START")
-                val metrics = llmRunner.generate(prompt, inputTokenCount)
-                Log.d(TAG, ">>> LlmRunner.generate() DONE — ${metrics.totalLatencyMs}ms")
+                Log.d(TAG, ">>> ${activeEngine.engineName}.generate() START")
+                val metrics = activeEngine.generate(prompt, inputTokenCount)
+                Log.d(TAG, ">>> ${activeEngine.engineName}.generate() DONE — ${metrics.totalLatencyMs}ms")
 
-                saveResult(prompt, metrics, modelPath, backendStr, promptId, promptCategory, promptLang)
+                saveResult(prompt, metrics, modelPath, backendStr, promptId, promptCategory,
+                    promptLang, activeEngine.engineName, activeEngine.initTimeMs)
             } catch (e: Exception) {
                 Log.e(TAG, "CAUGHT EXCEPTION: ${e::class.java.name}: ${e.message}")
                 Log.e(TAG, "Stacktrace:\n${e.stackTraceToString()}")
                 saveError(prompt, "${e::class.java.name}: ${e.message}\n${e.stackTraceToString()}")
             } finally {
+                engine?.close()
                 Log.d(TAG, "==== Test Finished ====")
                 finishAffinity()
             }
+        }
+    }
+
+    private fun createEngine(engineType: String): InferenceEngine {
+        return when (engineType.lowercase()) {
+            "mediapipe" -> MediaPipeEngine(this)
+            "llamacpp" -> LlamaCppEngine(this)
+            else -> {
+                Log.w(TAG, ">>> Unknown engine '$engineType', falling back to mediapipe")
+                MediaPipeEngine(this)
+            }
+        }
+    }
+
+    private fun autoDetectEngine(modelPath: String): String {
+        return when {
+            modelPath.endsWith(".task") -> "mediapipe"
+            modelPath.endsWith(".gguf") -> "llamacpp"
+            else -> {
+                Log.w(TAG, ">>> Cannot auto-detect engine for: $modelPath, defaulting to mediapipe")
+                "mediapipe"
+            }
+        }
+    }
+
+    private fun parseEngineParams(json: String): Map<String, String> {
+        return try {
+            val obj = JSONObject(json)
+            obj.keys().asSequence().associateWith { obj.getString(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, ">>> Failed to parse engine_params: ${e.message}")
+            emptyMap()
         }
     }
 
@@ -128,10 +166,13 @@ class MainActivity : AppCompatActivity() {
         backend: String,
         promptId: String,
         promptCategory: String,
-        promptLang: String
+        promptLang: String,
+        engineName: String,
+        initTimeMs: Long
     ) {
         val json = JSONObject().apply {
             put("status", "success")
+            put("engine", engineName)
             put("prompt_id", promptId)
             put("prompt_category", promptCategory)
             put("prompt_lang", promptLang)
@@ -142,7 +183,7 @@ class MainActivity : AppCompatActivity() {
             put("prompt", prompt)
             put("response", metrics.response)
             put("latency_ms", metrics.totalLatencyMs)
-            put("init_time_ms", llmRunner.initTimeMs)
+            put("init_time_ms", initTimeMs)
             put("metrics", metrics.toJson())
             put("timestamp", System.currentTimeMillis())
         }
@@ -155,6 +196,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveError(prompt: String, error: String) {
         val json = JSONObject().apply {
             put("status", "error")
+            put("engine", engine?.engineName ?: "unknown")
             put("device", getDeviceInfo())
             put("prompt", prompt)
             put("error", error)

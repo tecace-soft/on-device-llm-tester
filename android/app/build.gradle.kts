@@ -6,9 +6,7 @@ plugins {
 
 android {
     namespace = "com.tecace.llmtester"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.tecace.llmtester"
@@ -18,12 +16,24 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments(
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DANDROID_STL=c++_shared"
+                )
+                cppFlags("-fexceptions", "-frtti")
+            }
+        }
     }
 
     packaging {
         jniLibs {
-            // 16KB 페이지 기기에서도 4KB로 정렬된 라이브러리를
-            // '기존 방식(Legacy)'으로 강제 수용하도록 설정합니다.
             useLegacyPackaging = true
         }
     }
@@ -50,6 +60,13 @@ android {
     buildFeatures {
         compose = false
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
@@ -69,13 +86,12 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
-    // AppCompat 라이브러리 추가
+    // AppCompat
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // MediaPipe 및 Lifecycle (기존 코드)
+    // MediaPipe + Lifecycle
     implementation("com.google.mediapipe:tasks-genai:0.10.32")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-
 }
