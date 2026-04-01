@@ -65,8 +65,9 @@ CREATE TABLE IF NOT EXISTS models (
     model_name  TEXT NOT NULL DEFAULT '',
     model_path  TEXT NOT NULL DEFAULT '',
     backend     TEXT NOT NULL DEFAULT '',
+    engine      TEXT NOT NULL DEFAULT 'mediapipe',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(model_name, model_path, backend)
+    UNIQUE(model_name, model_path, backend, engine)
 );
 
 CREATE TABLE IF NOT EXISTS prompts (
@@ -165,6 +166,12 @@ def init_tables(con: sqlite3.Connection) -> None:
     if "eval_strategy" not in prompt_cols:
         con.execute("ALTER TABLE prompts ADD COLUMN eval_strategy TEXT NOT NULL DEFAULT 'none'")
 
+    # Phase 5 migration: engine column on models
+    model_cols = {row[1] for row in con.execute("PRAGMA table_info(models)")}
+    if "engine" not in model_cols:
+        con.execute("ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'mediapipe'")
+        logger.info("Phase 5 migration: added 'engine' column to models table")
+
     con.commit()
 
 
@@ -185,14 +192,15 @@ def upsert_device(con: sqlite3.Connection, manufacturer: str, model: str, produc
     return row[0]
 
 
-def upsert_model(con: sqlite3.Connection, model_name: str, model_path: str, backend: str) -> int:
+def upsert_model(con: sqlite3.Connection, model_name: str, model_path: str,
+                 backend: str, engine: str = "mediapipe") -> int:
     con.execute("""
-        INSERT OR IGNORE INTO models (model_name, model_path, backend)
-        VALUES (?, ?, ?)
-    """, (model_name, model_path, backend))
+        INSERT OR IGNORE INTO models (model_name, model_path, backend, engine)
+        VALUES (?, ?, ?, ?)
+    """, (model_name, model_path, backend, engine))
     row = con.execute(
-        "SELECT id FROM models WHERE model_name=? AND model_path=? AND backend=?",
-        (model_name, model_path, backend),
+        "SELECT id FROM models WHERE model_name=? AND model_path=? AND backend=? AND engine=?",
+        (model_name, model_path, backend, engine),
     ).fetchone()
     return row[0]
 
@@ -323,6 +331,9 @@ def parse_result_file(path: Path) -> Optional[dict]:
     if not model_name and model_path:
         model_name = os.path.basename(model_path)
 
+    # Phase 5: engine field (default to mediapipe for backward compat)
+    engine = data.get("engine", "mediapipe")
+
     return {
         "manufacturer":          device.get("manufacturer", ""),
         "device_model":          device.get("model", ""),
@@ -335,6 +346,7 @@ def parse_result_file(path: Path) -> Optional[dict]:
         "model_name":            model_name,
         "model_path":            model_path,
         "backend":               (data.get("backend") or "CPU").upper(),
+        "engine":                engine,
         "prompt_id":             data.get("prompt_id", "unknown"),
         "category":              data.get("prompt_category", ""),
         "lang":                  data.get("prompt_lang", "en"),
@@ -387,7 +399,8 @@ def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, in
                 rec["soc"], rec["android_version"],
                 rec["sdk_int"], rec["cpu_cores"], rec["max_heap_mb"],
             )
-            model_pk  = upsert_model(con, rec["model_name"], rec["model_path"], rec["backend"])
+            model_pk  = upsert_model(con, rec["model_name"], rec["model_path"],
+                                     rec["backend"], rec["engine"])
             prompt_pk = upsert_prompt(con, rec["prompt_id"], rec["category"], rec["lang"], rec["prompt_text"])
 
             cur = con.execute("""

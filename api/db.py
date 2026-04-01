@@ -25,8 +25,9 @@ CREATE TABLE IF NOT EXISTS models (
     model_name  TEXT NOT NULL DEFAULT '',
     model_path  TEXT NOT NULL DEFAULT '',
     backend     TEXT NOT NULL DEFAULT '',
+    engine      TEXT NOT NULL DEFAULT 'mediapipe',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(model_name, model_path, backend)
+    UNIQUE(model_name, model_path, backend, engine)
 );
 
 CREATE TABLE IF NOT EXISTS prompts (
@@ -117,6 +118,12 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         await db.execute("ALTER TABLE prompts ADD COLUMN ground_truth TEXT")
     if "eval_strategy" not in prompt_cols:
         await db.execute("ALTER TABLE prompts ADD COLUMN eval_strategy TEXT NOT NULL DEFAULT 'none'")
+
+    # Phase 5: engine column on models
+    async with db.execute("PRAGMA table_info(models)") as cur:
+        model_cols = {row[1] async for row in cur}
+    if "engine" not in model_cols:
+        await db.execute("ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'mediapipe'")
 
     await db.commit()
 
