@@ -110,6 +110,15 @@ def _escape_for_adb_shell(text: str) -> str:
     return f"'{escaped}'"
 
 
+def _auto_detect_engine(model_path: str) -> str:
+    """Auto-detect engine from file extension. Returns engine string or empty."""
+    if model_path.endswith(".task"):
+        return "mediapipe"
+    elif model_path.endswith(".gguf"):
+        return "llamacpp"
+    return ""
+
+
 # ── PC-side error JSON generation ─────────────────────────────────────────────
 
 def _get_device_info(serial: str | None = None) -> dict:
@@ -144,6 +153,7 @@ def save_pc_error_json(
     model_path: str,
     model_name: str,
     backend: str,
+    engine: str,
     prompt_id: str,
     category: str,
     lang: str,
@@ -168,6 +178,7 @@ def save_pc_error_json(
 
     data = {
         "status": "error",
+        "engine": engine,
         "prompt_id": prompt_id,
         "prompt_category": category,
         "prompt_lang": lang,
@@ -225,13 +236,27 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
         backend = model.get("backend", "CPU").upper()
         model_name = os.path.basename(model_path)
 
+        # ── Engine detection (Phase 5) ──
+        engine = model.get("engine", "").lower()
+        if not engine:
+            engine = _auto_detect_engine(model_path)
+            if not engine:
+                logger.error("[SKIP] Unknown model format and no engine specified: %s", model_path)
+                fail_count += len(prompts)
+                current += len(prompts)
+                continue
+            logger.info("[AUTO-DETECT] %s → engine=%s", model_name, engine)
+
+        engine_params = model.get("engine_params", {})
+        engine_params_json = json.dumps(engine_params) if engine_params else "{}"
+
         if not check_model_exists(model_path, serial=serial):
             logger.error("[SKIP] Model not found: %s", model_path)
             fail_count += len(prompts)
             current += len(prompts)
             continue
 
-        logger.info("[Model: %s] [Backend: %s] Starting tests", model_name, backend)
+        logger.info("[Model: %s] [Engine: %s] [Backend: %s] Starting tests", model_name, engine, backend)
 
         for prompt_entry in prompts:
             current += 1
@@ -253,7 +278,7 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                     logger.error("ADB disconnected — %d consecutive failures. Aborting.", MAX_ADB_FAILURES)
                     return 2
                 save_pc_error_json(
-                    serial, model_path, model_name, backend,
+                    serial, model_path, model_name, backend, engine,
                     prompt_id, category, lang, prompt_text,
                     "ADB connection failure — could not check device status",
                 )
@@ -262,11 +287,9 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
 
             adb_failure_streak = 0
 
-            logger.info("[%d/%d] [%s] [%s] [%s] %s...",
-                        current, total, prompt_id, category, lang, prompt_text[:40])
+            logger.info("[%d/%d] [%s] [%s] [%s] [%s] %s...",
+                        current, total, prompt_id, engine, category, lang, prompt_text[:40])
 
-            # FIX(P1): Build the entire `am start` command as a single string
-            # passed to `adb shell` so that spaces in prompt_text are preserved.
             am_cmd = (
                 f"am start -W -S"
                 f" -n {PACKAGE_NAME}/.MainActivity"
@@ -274,6 +297,8 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                 f" --es input_prompt {_escape_for_adb_shell(prompt_text)}"
                 f" --ei max_tokens {max_tokens}"
                 f" --es backend {_escape_for_adb_shell(backend)}"
+                f" --es engine {_escape_for_adb_shell(engine)}"
+                f" --es engine_params {_escape_for_adb_shell(engine_params_json)}"
                 f" --es prompt_id {_escape_for_adb_shell(prompt_id)}"
                 f" --es prompt_category {_escape_for_adb_shell(category)}"
                 f" --es prompt_lang {_escape_for_adb_shell(lang)}"
@@ -319,7 +344,7 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                     reason = "App error or crash — no result file generated"
                 logger.warning("[FAILED] [%s] %s — %s", prompt_id, model_name, reason)
                 save_pc_error_json(
-                    serial, model_path, model_name, backend,
+                    serial, model_path, model_name, backend, engine,
                     prompt_id, category, lang, prompt_text, reason,
                 )
                 fail_count += 1
