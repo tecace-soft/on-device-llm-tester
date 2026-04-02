@@ -2,7 +2,7 @@
   "timeout_sec": 120,
   "models": [    
     {
-      "path": "/data/local/tmp/llm_test/models/Bonsai-8B.gguf",
+      "path": "/data/local/tmp/llm_test/models/google_gemma-3-1b-it-Q4_K_M.gguf",
       "max_tokens": 1024,
       "backend": "CPU",
       "engine": "llamacpp",
