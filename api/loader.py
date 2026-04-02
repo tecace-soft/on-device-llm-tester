@@ -19,6 +19,7 @@ def _build_where(
     backend: Optional[str],
     status: Optional[str],
     run_id: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> tuple[str, list]:
     clauses: list[str] = []
     params: list = []
@@ -41,6 +42,9 @@ def _build_where(
     if run_id:
         clauses.append("ru.run_id = ?")
         params.append(run_id)
+    if engine:
+        clauses.append("LOWER(m.engine) = LOWER(?)")
+        params.append(engine)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
@@ -55,6 +59,7 @@ _SELECT = """
         m.model_name,
         m.model_path,
         m.backend,
+        m.engine,
         d.manufacturer,
         d.model             AS device_model,
         d.product,
@@ -119,6 +124,7 @@ def _row_to_item(row: aiosqlite.Row) -> ResultItem:
         model_name=row["model_name"] or "",
         model_path=row["model_path"] or "",
         backend=row["backend"] or "",
+        engine=row["engine"] or "mediapipe",
         device=DeviceInfo(
             manufacturer=row["manufacturer"] or "",
             model=row["device_model"] or "",
@@ -150,10 +156,11 @@ async def load_all(
     backend: Optional[str] = None,
     status: Optional[str] = None,
     run_id: Optional[str] = None,
+    engine: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[ResultItem], int]:
-    where, params = _build_where(device, model, category, backend, status, run_id)
+    where, params = _build_where(device, model, category, backend, status, run_id, engine)
 
     count_query = f"""
         SELECT COUNT(*) FROM results r
@@ -215,6 +222,15 @@ async def list_runs(db: aiosqlite.Connection) -> list[str]:
     """Return distinct run_ids ordered by most recent first."""
     async with db.execute(
         "SELECT run_id FROM runs ORDER BY id DESC"
+    ) as cur:
+        rows = await cur.fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
+async def list_engines(db: aiosqlite.Connection) -> list[str]:
+    """Return distinct engine values from models table."""
+    async with db.execute(
+        "SELECT DISTINCT engine FROM models WHERE engine != '' ORDER BY engine"
     ) as cur:
         rows = await cur.fetchall()
     return [r[0] for r in rows if r[0]]

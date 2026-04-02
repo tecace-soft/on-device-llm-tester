@@ -50,7 +50,7 @@ function useAsync<T>(fetchFn: () => Promise<T>, deps: unknown[]): AsyncState<T> 
         }
       })
     return () => { cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick])
 
   return state
@@ -60,11 +60,13 @@ function useAsync<T>(fetchFn: () => Promise<T>, deps: unknown[]): AsyncState<T> 
 
 export function useResults(filters: Filters) {
   const params = buildParams(filters)
+
   return useAsync<{ items: ResultItem[]; meta: PaginationMeta | null }>(
     async () => {
       const res = await client.get<ApiSuccess<ResultItem[]>>('/results', { params })
-      return { items: res.data.data, meta: res.data.meta }
+      return { items: res.data.data, meta: res.data.meta ?? null }
     },
+    // 의존성 배열에 객체를 넣을 때는 JSON.stringify가 안전한 선택입니다.
     [JSON.stringify(params)],
   )
 }
@@ -143,6 +145,16 @@ export function useCategories() {
   )
 }
 
+export function useEngines() {
+  return useAsync<string[]>(
+    async () => {
+      const res = await client.get<ApiSuccess<string[]>>('/engines')
+      return res.data.data
+    },
+    [],
+  )
+}
+
 export function useRunIds() {
   return useAsync<string[]>(
     async () => {
@@ -157,9 +169,10 @@ export function useRuns(status?: string, limit = 20, offset = 0) {
   return useAsync<{ items: RunItem[]; meta: PaginationMeta | null }>(
     async () => {
       const params: Record<string, string | number | undefined> = { limit, offset }
-      if (status && status !== 'all') params.status = status
+      if (status && status !== 'all') 
+        params.status = status
       const res = await client.get<ApiSuccess<RunItem[]>>('/runs', { params })
-      return { items: res.data.data, meta: res.data.meta }
+      return { items: res.data.data, meta: res.data.meta ?? null }
     },
     [status, limit, offset],
   )
@@ -182,6 +195,7 @@ function buildParams(filters: Partial<Filters>): Record<string, string | number 
   if (filters.model) p.model = filters.model
   if (filters.category) p.category = filters.category
   if (filters.backend) p.backend = filters.backend
+  if (filters.engine) p.engine = filters.engine
   if (filters.status && filters.status !== 'all') p.status = filters.status
   if (filters.run_id) p.run_id = filters.run_id
   if ('limit' in filters && filters.limit !== undefined) p.limit = filters.limit

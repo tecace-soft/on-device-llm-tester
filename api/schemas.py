@@ -62,6 +62,7 @@ class ResultItem(BaseModel):
     model_name: str = ""
     model_path: str = ""
     backend: str = ""
+    engine: str = "mediapipe"
     device: DeviceInfo = DeviceInfo()
     prompt: str = ""
     response: str = ""

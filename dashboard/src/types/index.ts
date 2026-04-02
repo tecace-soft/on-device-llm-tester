@@ -59,6 +59,7 @@ export interface ResultItem {
   model_name: string
   model_path: string
   backend: string
+  engine: string
   device: DeviceInfo
   prompt: string
   response: string
@@ -146,6 +147,7 @@ export interface Filters {
   model?: string
   category?: string
   backend?: string
+  engine?: string
   status?: 'success' | 'error' | 'all'
   run_id?: string
   limit: number

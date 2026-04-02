@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from db import lifespan
-from loader import list_categories, list_devices, list_models, list_runs, load_all
+from loader import list_categories, list_devices, list_engines, list_models, list_runs, load_all
 
 from schemas import (
     ApiError,
@@ -55,7 +55,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",
 app = FastAPI(
     title="On-Device LLM Tester API",
     description="Benchmark results API for on-device LLM inference",
-    version="3.0.0",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -122,6 +122,7 @@ async def get_results(
     backend: Optional[str] = Query(None),
     status: Optional[str] = Query(None, description="success | error | all"),
     run_id: Optional[str] = Query(None, description="Filter by CI run_id"),
+    engine: Optional[str] = Query(None, description="Filter by engine: mediapipe | llamacpp"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -133,6 +134,7 @@ async def get_results(
         backend=backend,
         status=status if status != "all" else None,
         run_id=run_id,
+        engine=engine,
         limit=limit,
         offset=offset,
     )
@@ -345,7 +347,7 @@ async def get_run_summary(request: Request, run_id: str):
     return ApiSuccess(data=stats)
 
 
-# ── /api/models, /api/devices, /api/categories, /api/runs-list ────────────────
+# ── /api/models, /api/devices, /api/categories, /api/engines, /api/runs-list ──
 
 
 @app.get("/api/models", response_model=ApiSuccess[List[str]])
@@ -361,6 +363,12 @@ async def get_devices(request: Request):
 @app.get("/api/categories", response_model=ApiSuccess[List[str]])
 async def get_categories(request: Request):
     return ApiSuccess(data=await list_categories(_db(request)))
+
+
+@app.get("/api/engines", response_model=ApiSuccess[List[str]])
+async def get_engines(request: Request):
+    """List distinct engine types (e.g. mediapipe, llamacpp)."""
+    return ApiSuccess(data=await list_engines(_db(request)))
 
 
 @app.get("/api/run-ids", response_model=ApiSuccess[List[str]])
@@ -381,6 +389,7 @@ async def export_csv(
     backend: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     run_id: Optional[str] = Query(None),
+    engine: Optional[str] = Query(None),
 ):
     rows, total = await load_all(
         _db(request),
@@ -390,6 +399,7 @@ async def export_csv(
         backend=backend,
         status=status if status != "all" else None,
         run_id=run_id,
+        engine=engine,
         limit=10_000,
         offset=0,
     )
@@ -403,6 +413,7 @@ async def export_csv(
         "prompt_lang",
         "model_name",
         "backend",
+        "engine",
         "device_manufacturer",
         "device_model",
         "device_soc",
@@ -439,6 +450,7 @@ async def export_csv(
                 "prompt_lang": r.prompt_lang,
                 "model_name": r.model_name,
                 "backend": r.backend,
+                "engine": r.engine,
                 "device_manufacturer": r.device.manufacturer,
                 "device_model": r.device.model,
                 "device_soc": r.device.soc,

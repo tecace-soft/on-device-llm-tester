@@ -1,4 +1,4 @@
-import { useDevices, useModels, useCategories } from '@/hooks/useResults'
+import { useDevices, useModels, useCategories, useEngines } from '@/hooks/useResults'
 import type { Filters } from '@/types'
 
 interface Props {
@@ -49,9 +49,10 @@ export function FilterBar({ filters, onFilter, onReset }: Props) {
   const { data: devices } = useDevices()
   const { data: models } = useModels(filters.device)
   const { data: categories } = useCategories()
+  const { data: engines } = useEngines()
 
   const hasActive =
-    filters.device || filters.model || filters.category || filters.backend || filters.status
+    filters.device || filters.model || filters.category || filters.backend || filters.engine || filters.status
 
   return (
     <div
@@ -81,6 +82,12 @@ export function FilterBar({ filters, onFilter, onReset }: Props) {
         value={filters.backend}
         options={['CPU', 'GPU']}
         onChange={(v) => onFilter('backend', v)}
+      />
+      <Select
+        label="Engine"
+        value={filters.engine}
+        options={engines ?? []}
+        onChange={(v) => onFilter('engine', v)}
       />
       <Select
         label="Status"
