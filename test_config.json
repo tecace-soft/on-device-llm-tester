@@ -8,7 +8,7 @@
       "engine": "mediapipe"
     },
     {
-      "path": "/data/local/tmp/llm_test/models/SmolLM2-135M-Instruct-Q8_0.gguf",
+      "path": "/data/local/tmp/llm_test/models/Bonsai-8B.gguf",
       "max_tokens": 1024,
       "backend": "CPU",
       "engine": "llamacpp",
