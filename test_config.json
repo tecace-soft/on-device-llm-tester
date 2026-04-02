@@ -1,12 +1,6 @@
 {
   "timeout_sec": 120,
-  "models": [
-    {
-      "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
-      "max_tokens": 1024,
-      "backend": "CPU",
-      "engine": "mediapipe"
-    },
+  "models": [    
     {
       "path": "/data/local/tmp/llm_test/models/Bonsai-8B.gguf",
       "max_tokens": 1024,
@@ -17,6 +11,12 @@
         "n_threads": "4",
         "n_ctx": "2048"
       }
+    },
+    {
+      "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
+      "max_tokens": 1024,
+      "backend": "CPU",
+      "engine": "mediapipe"
     }
   ],
   "prompts": [
