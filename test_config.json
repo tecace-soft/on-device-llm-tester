@@ -1,19 +1,8 @@
 {
   "timeout_sec": 120,
-  "models": [    
+  "models": [
     {
-      "path": "/data/local/tmp/llm_test/models/google_gemma-3-1b-it-Q4_K_M.gguf",
-      "max_tokens": 1024,
-      "backend": "CPU",
-      "engine": "llamacpp",
-      "engine_params": {
-        "n_gpu_layers": "0",
-        "n_threads": "4",
-        "n_ctx": "2048"
-      }
-    },
-    {
-      "path": "/data/local/tmp/llm_test/models/gemma3-1b-it-int4.task",
+      "path": "/data/local/tmp/llm_test/models/gemma-3-270m-it-int8.task",
       "max_tokens": 1024,
       "backend": "CPU",
       "engine": "mediapipe"
