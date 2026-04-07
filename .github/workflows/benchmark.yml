@@ -62,6 +62,9 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python scripts/shuttle.py --all-devices
 
+      # ✨ Phase 6: runner.py now automatically collects resource profiling
+      # (battery, thermal, voltage, current, meminfo) before/after each inference.
+      # No additional step needed — profile_*.json files are created alongside results.
       - name: Run benchmark
         env:
           PYTHONIOENCODING: utf-8
@@ -86,6 +89,8 @@ jobs:
           }
           # Sequential mode: runner.py already did per-device sync — skip
 
+      # ✨ Phase 6: ingest.py now matches profile_*.json with result_*.json
+      # and loads resource profiling columns into the results table.
       - name: Ingest results to DB
         env:
           PYTHONIOENCODING: utf-8
@@ -134,6 +139,8 @@ jobs:
           path: logs/*.log
           retention-days: 30
 
+      # ✨ Phase 6: ingest.py --summary-only now includes resource profiling stats
+      # (avg thermal delta, avg voltage delta, avg PSS, profiling coverage)
       - name: Summary
         env:
           PYTHONIOENCODING: utf-8
@@ -147,7 +154,7 @@ jobs:
           "- Mode: ${{ inputs.device_mode }}" >> $env:GITHUB_STEP_SUMMARY
           "- Parallel: ${{ inputs.parallel }}" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
-          "### DB Stats" >> $env:GITHUB_STEP_SUMMARY
+          "### DB Stats (incl. Resource Profiling)" >> $env:GITHUB_STEP_SUMMARY
           python scripts/ingest.py --summary-only >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
           "### Validation" >> $env:GITHUB_STEP_SUMMARY

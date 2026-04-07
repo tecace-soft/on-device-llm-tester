@@ -1,4 +1,4 @@
-import { Activity, CheckCircle, Clock, Zap } from 'lucide-react'
+import { Activity, CheckCircle, Clock, Zap, Thermometer, Battery } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell, Legend,
@@ -15,6 +15,12 @@ const COLORS = ['#6c63ff', '#4caf7d', '#f0a965', '#f06565', '#60a5fa', '#a78bfa'
 function fmt(val: number | null | undefined, decimals = 1, unit = ''): string {
   if (val == null) return '—'
   return `${val.toFixed(decimals)}${unit}`
+}
+
+function fmtSign(val: number | null | undefined, decimals = 1, unit = ''): string {
+  if (val == null) return '—'
+  const sign = val > 0 ? '+' : ''
+  return `${sign}${val.toFixed(decimals)}${unit}`
 }
 
 function CustomTooltip({ active, payload, label }: any) {
@@ -107,9 +113,10 @@ function SuccessRateByCategory() {
 }
 
 export default function Overview() {
-  const { tick, refresh } = useRefresh()
+  const { refresh } = useRefresh()
   const { data: summary, loading, error } = useSummary({})
-  void tick
+
+  const res = summary?.resource
 
   return (
     <div className="flex flex-col flex-1 overflow-auto">
@@ -122,36 +129,64 @@ export default function Overview() {
         ) : error ? (
           <ErrorFallback error={error} />
         ) : (
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <KpiCard
-              title="Total Tests"
-              value={summary?.total ?? '—'}
-              sub={`${summary?.success ?? 0} success / ${summary?.errors ?? 0} errors`}
-              icon={<Activity size={16} />}
-              color="var(--accent)"
-            />
-            <KpiCard
-              title="Success Rate"
-              value={fmt(summary?.success_rate, 1, '%')}
-              sub={`${summary?.success ?? 0} of ${summary?.total ?? 0} passed`}
-              icon={<CheckCircle size={16} />}
-              color="var(--success)"
-            />
-            <KpiCard
-              title="Avg Latency"
-              value={fmt(summary?.latency?.avg, 0, ' ms')}
-              sub={`p95: ${fmt(summary?.latency?.p95, 0, ' ms')}`}
-              icon={<Clock size={16} />}
-              color="var(--warning)"
-            />
-            <KpiCard
-              title="Avg Decode TPS"
-              value={fmt(summary?.avg_decode_tps, 1)}
-              sub={`Prefill: ${fmt(summary?.avg_prefill_tps, 1)} tps`}
-              icon={<Zap size={16} />}
-              color="var(--accent)"
-            />
-          </div>
+          <>
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <KpiCard
+                title="Total Tests"
+                value={summary?.total ?? '—'}
+                sub={`${summary?.success ?? 0} success / ${summary?.errors ?? 0} errors`}
+                icon={<Activity size={16} />}
+                color="var(--accent)"
+              />
+              <KpiCard
+                title="Success Rate"
+                value={fmt(summary?.success_rate, 1, '%')}
+                sub={`${summary?.success ?? 0} of ${summary?.total ?? 0} passed`}
+                icon={<CheckCircle size={16} />}
+                color="var(--success)"
+              />
+              <KpiCard
+                title="Avg Latency"
+                value={fmt(summary?.latency?.avg, 0, ' ms')}
+                sub={`p95: ${fmt(summary?.latency?.p95, 0, ' ms')}`}
+                icon={<Clock size={16} />}
+                color="var(--warning)"
+              />
+              <KpiCard
+                title="Avg Decode TPS"
+                value={fmt(summary?.avg_decode_tps, 1)}
+                sub={`Prefill: ${fmt(summary?.avg_prefill_tps, 1)} tps`}
+                icon={<Zap size={16} />}
+                color="var(--accent)"
+              />
+            </div>
+
+            {res && (
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+                <KpiCard
+                  title="Avg Thermal Δ"
+                  value={fmtSign(res.avg_thermal_delta_celsius, 1, '°C')}
+                  sub={`Profiled: ${fmt(res.profiling_coverage, 0, '%')}`}
+                  icon={<Thermometer size={16} />}
+                  color="var(--danger)"
+                />
+                <KpiCard
+                  title="Avg Voltage Δ"
+                  value={fmtSign(res.avg_voltage_delta_mv, 0, ' mV')}
+                  sub="Battery voltage drop"
+                  icon={<Battery size={16} />}
+                  color="var(--warning)"
+                />
+                <KpiCard
+                  title="Avg System PSS"
+                  value={fmt(res.avg_system_pss_mb, 0, ' MB')}
+                  sub="Total memory footprint"
+                  icon={<Activity size={16} />}
+                  color="var(--success)"
+                />
+              </div>
+            )}
+          </>
         )}
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

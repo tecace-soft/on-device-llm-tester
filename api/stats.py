@@ -12,6 +12,7 @@ from schemas import (
     ModelSummary,
     ModelValidation,
     PercentileStats,
+    ResourceSummary,
     SummaryStats,
     ValidationSummary,
 )
@@ -106,6 +107,40 @@ async def _percentile(
         return row[0] if row else None
 
 
+async def _build_resource_summary(
+    db: aiosqlite.Connection,
+    where: str,
+    params: list,
+    total: int,
+) -> Optional[ResourceSummary]:
+    """Phase 6: 리소스 프로파일링 집계 통계."""
+    q = f"""
+        SELECT
+            COUNT(r.battery_level_start) AS profiled,
+            AVG(r.thermal_end - r.thermal_start) AS avg_thermal_delta,
+            AVG(r.voltage_end_mv - r.voltage_start_mv) AS avg_voltage_delta,
+            AVG(r.current_after_ua - r.current_before_ua) AS avg_current_delta,
+            AVG(r.system_pss_mb) AS avg_pss
+        {_JOINS}
+        {where}
+        AND r.battery_level_start IS NOT NULL
+    """
+    async with db.execute(q, params) as cur:
+        row = await cur.fetchone()
+
+    profiled = row["profiled"] or 0
+    if profiled == 0:
+        return None
+
+    return ResourceSummary(
+        avg_thermal_delta_celsius=round(row["avg_thermal_delta"] / 10, 2) if row["avg_thermal_delta"] is not None else None,
+        avg_voltage_delta_mv=round(row["avg_voltage_delta"], 1) if row["avg_voltage_delta"] is not None else None,
+        avg_current_delta_ua=round(row["avg_current_delta"], 0) if row["avg_current_delta"] is not None else None,
+        avg_system_pss_mb=round(row["avg_pss"], 1) if row["avg_pss"] is not None else None,
+        profiling_coverage=round(profiled / total * 100, 1) if total > 0 else 0.0,
+    )
+
+
 async def _build_summary(
     db: aiosqlite.Connection,
     where: str,
@@ -133,6 +168,8 @@ async def _build_summary(
             max=r["max_latency"] or 0.0,
         )
 
+    resource = await _build_resource_summary(db, where, params, total)
+
     return SummaryStats(
         total=total,
         success=success,
@@ -146,6 +183,7 @@ async def _build_summary(
         avg_peak_native_mem_mb=r["avg_peak_native_mem_mb"],
         avg_peak_java_mem_mb=r["avg_peak_java_mem_mb"],
         avg_output_tokens=r["avg_output_tokens"],
+        resource=resource,
     )
 
 

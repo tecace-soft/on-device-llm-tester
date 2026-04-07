@@ -39,6 +39,9 @@ RESULTS_DIR = Path(os.getenv("RESULTS_DIR", str(_PROJECT_ROOT / "results")))
 DB_PATH     = Path(os.getenv("DB_PATH",     str(_PROJECT_ROOT / "api" / "data" / "llm_tester.db")))
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", str(_PROJECT_ROOT / "test_config.json")))
 
+# Phase 6: profile JSON 매칭 시 허용하는 타임스탬프 차이 (ms)
+_PROFILE_MATCH_WINDOW_MS = 5000
+
 
 # ── Shared DDL (single source of truth) ───────────────────────────────────────
 # NOTE: This DDL is intentionally duplicated from api/db.py for sync-driver usage.
@@ -117,6 +120,18 @@ CREATE TABLE IF NOT EXISTS results (
     itl_p95_ms            REAL,
     itl_p99_ms            REAL,
 
+    -- Phase 6: Resource profiling columns
+    battery_level_start   INTEGER,
+    battery_level_end     INTEGER,
+    thermal_start         INTEGER,
+    thermal_end           INTEGER,
+    voltage_start_mv      INTEGER,
+    voltage_end_mv        INTEGER,
+    current_before_ua     INTEGER,
+    current_after_ua      INTEGER,
+    system_pss_mb         REAL,
+    profiling_error       TEXT,
+
     timestamp  INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
 
@@ -171,6 +186,28 @@ def init_tables(con: sqlite3.Connection) -> None:
     if "engine" not in model_cols:
         con.execute("ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'mediapipe'")
         logger.info("Phase 5 migration: added 'engine' column to models table")
+
+    # Phase 6 migration: resource profiling columns on results
+    phase6_cols = {
+        "battery_level_start": "INTEGER",
+        "battery_level_end": "INTEGER",
+        "thermal_start": "INTEGER",
+        "thermal_end": "INTEGER",
+        "voltage_start_mv": "INTEGER",
+        "voltage_end_mv": "INTEGER",
+        "current_before_ua": "INTEGER",
+        "current_after_ua": "INTEGER",
+        "system_pss_mb": "REAL",
+        "profiling_error": "TEXT",
+    }
+    added = []
+    for col_name, col_type in phase6_cols.items():
+        if col_name not in cols:
+            con.execute(f"ALTER TABLE results ADD COLUMN {col_name} {col_type}")
+            added.append(col_name)
+    if added:
+        logger.info("Phase 6 migration: added %d resource profiling columns (%s)",
+                     len(added), ", ".join(added))
 
     con.commit()
 
@@ -315,12 +352,45 @@ def _int(v: object) -> Optional[int]:
         return None
 
 
+def _is_profile_json(data: dict) -> bool:
+    """Phase 6: profile_*.json인지 판별. type=resource_profile이면 True."""
+    return data.get("type") == "resource_profile"
+
+
+def _find_matching_profile(result_path: Path, timestamp: Optional[int]) -> Optional[dict]:
+    """Phase 6: 결과 JSON과 매칭되는 profile JSON 검색.
+
+    같은 디렉토리에서 profile_*.json 중 timestamp 차이가 ±5초 이내인 것을 찾음.
+    추가 매칭 기준: prompt_id + model_name (동시에 여러 테스트가 진행될 때 안전)
+    """
+    if timestamp is None:
+        return None
+
+    result_dir = result_path.parent
+    for profile_path in result_dir.glob("profile_*.json"):
+        try:
+            with open(profile_path, "r", encoding="utf-8") as f:
+                profile = json.load(f)
+            if profile.get("type") != "resource_profile":
+                continue
+            p_ts = profile.get("timestamp", 0)
+            if abs(p_ts - timestamp) <= _PROFILE_MATCH_WINDOW_MS:
+                return profile
+        except (json.JSONDecodeError, OSError):
+            continue
+    return None
+
+
 def parse_result_file(path: Path) -> Optional[dict]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("JSON parse failed for %s: %s", path, e)
+        return None
+
+    # Phase 6: profile JSON은 적재 대상이 아님 (result와 매칭하여 merge)
+    if _is_profile_json(data):
         return None
 
     device = data.get("device") or {}
@@ -334,7 +404,19 @@ def parse_result_file(path: Path) -> Optional[dict]:
     # Phase 5: engine field (default to mediapipe for backward compat)
     engine = data.get("engine", "mediapipe")
 
-    return {
+    timestamp = _int(data.get("timestamp"))
+
+    # Phase 6: profiling 데이터 수집
+    # 1. 에러 JSON에는 profiling 데이터가 직접 포함됨 (runner.py가 merge)
+    # 2. 성공 JSON에는 없으므로 별도 profile_*.json에서 매칭
+    profile_data = _extract_profile_from_data(data)
+    if not _has_profiling(profile_data):
+        matched_profile = _find_matching_profile(path, timestamp)
+        if matched_profile:
+            profile_data = _extract_profile_from_data(matched_profile)
+            logger.debug("[PROFILE:MATCH] %s matched with profile JSON", path.name)
+
+    rec = {
         "manufacturer":          device.get("manufacturer", ""),
         "device_model":          device.get("model", ""),
         "product":               device.get("product", ""),
@@ -368,8 +450,35 @@ def parse_result_file(path: Path) -> Optional[dict]:
         "itl_p50_ms":            _float(met.get("itl_p50_ms")           or data.get("itl_p50_ms")),
         "itl_p95_ms":            _float(met.get("itl_p95_ms")           or data.get("itl_p95_ms")),
         "itl_p99_ms":            _float(met.get("itl_p99_ms")           or data.get("itl_p99_ms")),
-        "timestamp":             _int(data.get("timestamp")),
+        "timestamp":             timestamp,
     }
+
+    rec.update(profile_data)
+    return rec
+
+
+def _extract_profile_from_data(data: dict) -> dict:
+    """Phase 6: JSON data에서 profiling 필드 추출. 없으면 전부 None."""
+    return {
+        "battery_level_start":  _int(data.get("battery_level_start")),
+        "battery_level_end":    _int(data.get("battery_level_end")),
+        "thermal_start":        _int(data.get("thermal_start")),
+        "thermal_end":          _int(data.get("thermal_end")),
+        "voltage_start_mv":     _int(data.get("voltage_start_mv")),
+        "voltage_end_mv":       _int(data.get("voltage_end_mv")),
+        "current_before_ua":    _int(data.get("current_before_ua")),
+        "current_after_ua":     _int(data.get("current_after_ua")),
+        "system_pss_mb":        _float(data.get("system_pss_mb")),
+        "profiling_error":      data.get("profiling_error"),
+    }
+
+
+def _has_profiling(profile_data: dict) -> bool:
+    """Phase 6: profiling 데이터가 하나라도 있는지 확인."""
+    for key in ("battery_level_start", "thermal_start", "voltage_start_mv", "system_pss_mb"):
+        if profile_data.get(key) is not None:
+            return True
+    return False
 
 
 # ── Core ingest ───────────────────────────────────────────────────────────────
@@ -389,7 +498,11 @@ def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, in
     for path in sorted(json_files):
         rec = parse_result_file(path)
         if rec is None:
-            errors += 1
+            # Phase 6: profile_*.json은 None 반환 → skip (에러 아님)
+            if path.name.startswith("profile_"):
+                skipped += 1
+            else:
+                errors += 1
             continue
 
         try:
@@ -412,8 +525,14 @@ def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, in
                     prefill_tps, decode_tps,
                     peak_java_memory_mb, peak_native_memory_mb,
                     itl_p50_ms, itl_p95_ms, itl_p99_ms,
+                    battery_level_start, battery_level_end,
+                    thermal_start, thermal_end,
+                    voltage_start_mv, voltage_end_mv,
+                    current_before_ua, current_after_ua,
+                    system_pss_mb, profiling_error,
                     timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 device_pk, model_pk, prompt_pk, run_pk,
                 rec["status"], rec["latency_ms"], rec["init_time_ms"],
@@ -423,6 +542,11 @@ def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, in
                 rec["prefill_tps"], rec["decode_tps"],
                 rec["peak_java_memory_mb"], rec["peak_native_memory_mb"],
                 rec["itl_p50_ms"], rec["itl_p95_ms"], rec["itl_p99_ms"],
+                rec["battery_level_start"], rec["battery_level_end"],
+                rec["thermal_start"], rec["thermal_end"],
+                rec["voltage_start_mv"], rec["voltage_end_mv"],
+                rec["current_before_ua"], rec["current_after_ua"],
+                rec["system_pss_mb"], rec["profiling_error"],
                 rec["timestamp"],
             ))
             if cur.rowcount:
@@ -484,6 +608,29 @@ def print_summary(con: sqlite3.Connection) -> None:
         print(f"Validation          : {validated} validated "
               f"(pass={val_row[1]}, fail={val_row[2]}, warn={val_row[3]}, "
               f"uncertain={val_row[4]}, skip={val_row[5]})")
+
+    # Phase 6: resource profiling summary
+    prof_row = con.execute("""
+        SELECT
+            COUNT(battery_level_start) AS profiled,
+            AVG(thermal_end - thermal_start) AS avg_thermal_delta,
+            AVG(voltage_end_mv - voltage_start_mv) AS avg_voltage_delta,
+            AVG(system_pss_mb) AS avg_pss,
+            COUNT(profiling_error) AS prof_errors
+        FROM results
+        WHERE battery_level_start IS NOT NULL
+    """).fetchone()
+    profiled = prof_row[0] or 0
+    if profiled > 0:
+        avg_td = prof_row[1] or 0
+        avg_vd = prof_row[2] or 0
+        avg_pss = prof_row[3] or 0
+        prof_errs = prof_row[4] or 0
+        print(f"Resource profiling  : {profiled} profiled "
+              f"(avg_thermal_delta={avg_td / 10:+.1f}°C, "
+              f"avg_voltage_delta={avg_vd:+.0f}mV, "
+              f"avg_pss={avg_pss:.0f}MB, "
+              f"errors={prof_errs})")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

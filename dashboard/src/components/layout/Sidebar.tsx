@@ -1,11 +1,12 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, TrendingUp, GitCompare, MessageSquare, Table2, Cpu, History, Smartphone, ShieldCheck } from 'lucide-react'
+import { LayoutDashboard, TrendingUp, GitCompare, MessageSquare, Table2, Cpu, History, Smartphone, ShieldCheck, Battery } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
   { to: '/performance', label: 'Performance', icon: TrendingUp },
   { to: '/compare', label: 'Compare', icon: GitCompare },
   { to: '/device-compare', label: 'Device Compare', icon: Smartphone },
+  { to: '/resource', label: 'Resource', icon: Battery },
   { to: '/validation', label: 'Validation', icon: ShieldCheck },
   { to: '/responses', label: 'Responses', icon: MessageSquare },
   { to: '/raw', label: 'Raw Data', icon: Table2 },
@@ -51,7 +52,7 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="px-5 py-4 border-t text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}>
-        v4.0.0 · validation
+        v5.0.0 · resource profiling
       </div>
     </aside>
   )

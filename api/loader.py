@@ -5,7 +5,7 @@ from typing import Optional
 
 import aiosqlite
 
-from schemas import DeviceInfo, Metrics, ResultItem
+from schemas import DeviceInfo, Metrics, ResourceProfile, ResultItem
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,16 @@ _SELECT = """
         r.itl_p50_ms,
         r.itl_p95_ms,
         r.itl_p99_ms,
+        r.battery_level_start,
+        r.battery_level_end,
+        r.thermal_start,
+        r.thermal_end,
+        r.voltage_start_mv,
+        r.voltage_end_mv,
+        r.current_before_ua,
+        r.current_after_ua,
+        r.system_pss_mb,
+        r.profiling_error,
         ru.run_id           AS ci_run_id
     FROM results r
     JOIN devices d  ON r.device_id = d.id
@@ -93,6 +103,50 @@ _SELECT = """
     JOIN prompts p  ON r.prompt_id = p.id
     LEFT JOIN runs ru ON r.run_id  = ru.id
 """
+
+
+def _safe_delta(a: Optional[int], b: Optional[int]) -> Optional[int]:
+    """Compute b - a if both are non-None."""
+    if a is not None and b is not None:
+        return b - a
+    return None
+
+
+def _build_resource_profile(row: aiosqlite.Row) -> Optional[ResourceProfile]:
+    """Phase 6: DB row에서 ResourceProfile 빌드. 프로파일링 데이터 없으면 None."""
+    bls = row["battery_level_start"]
+    ble = row["battery_level_end"]
+    ts = row["thermal_start"]
+    te = row["thermal_end"]
+    vs = row["voltage_start_mv"]
+    ve = row["voltage_end_mv"]
+    cb = row["current_before_ua"]
+    ca = row["current_after_ua"]
+    pss = row["system_pss_mb"]
+    pe = row["profiling_error"]
+
+    has_data = any(v is not None for v in (bls, ts, vs, pss, pe))
+    if not has_data:
+        return None
+
+    return ResourceProfile(
+        battery_level_start=bls,
+        battery_level_end=ble,
+        battery_delta=_safe_delta(bls, ble),
+        thermal_start=ts,
+        thermal_end=te,
+        thermal_delta=_safe_delta(ts, te),
+        thermal_start_celsius=round(ts / 10, 1) if ts is not None else None,
+        thermal_end_celsius=round(te / 10, 1) if te is not None else None,
+        voltage_start_mv=vs,
+        voltage_end_mv=ve,
+        voltage_delta_mv=_safe_delta(vs, ve),
+        current_before_ua=cb,
+        current_after_ua=ca,
+        current_delta_ua=_safe_delta(cb, ca),
+        system_pss_mb=pss,
+        profiling_error=pe,
+    )
 
 
 def _row_to_item(row: aiosqlite.Row) -> ResultItem:
@@ -143,6 +197,7 @@ def _row_to_item(row: aiosqlite.Row) -> ResultItem:
         error=row["error"],
         timestamp=row["timestamp"],
         run_id=row["ci_run_id"],
+        resource_profile=_build_resource_profile(row),
     )
 
 

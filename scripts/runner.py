@@ -20,6 +20,9 @@ ADB_RETRY_DELAY = 2
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCAL_RESULTS_DIR = os.path.join(_PROJECT_ROOT, "results")
 
+# ── Phase 6: Inter-test thermal guard ─────────────────────────────────────────
+INTER_TEST_THERMAL_THRESHOLD = 380  # 38.0°C — 개별 테스트 간 쿨다운 임계값
+
 
 # ── ADB helpers with retry ────────────────────────────────────────────────────
 
@@ -159,12 +162,15 @@ def save_pc_error_json(
     lang: str,
     prompt_text: str,
     error_reason: str,
+    profile_data: dict | None = None,
 ) -> None:
     """Write an error JSON on PC side when device fails to produce a result.
 
     Saved to results/{device_model}/{model_name}/ so ingest.py picks it up
     automatically. This ensures timeout/crash failures are tracked in DB
     and reflected in validation stats.
+
+    Phase 6: profile_data가 제공되면 에러 JSON에 리소스 프로파일링 데이터를 포함.
     """
     device_info = _get_device_info(serial)
     device_model = (device_info.get("model") or "unknown_device").replace("/", "_")
@@ -192,16 +198,58 @@ def save_pc_error_json(
         "timestamp": timestamp,
     }
 
+    if profile_data:
+        data.update(profile_data)
+
     filepath = os.path.join(target_dir, filename)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     logger.info("[ERROR JSON] %s → %s", prompt_id, filepath)
 
 
+# ── Phase 6: Profile JSON generation ─────────────────────────────────────────
+
+def save_profile_json(
+    serial: str | None,
+    model_name: str,
+    prompt_id: str,
+    timestamp: int,
+    profile_data: dict,
+) -> None:
+    """Write a resource profile JSON on PC side for successful inferences.
+
+    Profile JSON은 ingest.py에서 result JSON과 타임스탬프 기반으로 매칭하여 merge.
+    같은 디렉토리(results/{device}/{model}/)에 저장하여 ingest.py가 자동 발견.
+    """
+    device_info = _get_device_info(serial)
+    device_model = (device_info.get("model") or "unknown_device").replace("/", "_")
+    safe_model = model_name.replace("/", "_")
+
+    target_dir = os.path.join(LOCAL_RESULTS_DIR, device_model, safe_model)
+    os.makedirs(target_dir, exist_ok=True)
+
+    filename = f"profile_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    data = {
+        "type": "resource_profile",
+        "timestamp": timestamp,
+        "prompt_id": prompt_id,
+        "model_name": model_name,
+    }
+    data.update(profile_data)
+
+    filepath = os.path.join(target_dir, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    logger.info("[PROFILE JSON] %s → %s", prompt_id, filepath)
+
+
 # ── Core Test Batch ───────────────────────────────────────────────────────────
 
 def run_test_batch(config_path: str = "test_config.json", serial: str | None = None) -> int:
     """Run all tests on a single device. Returns exit code: 0=all success, 1=some failures, 2=total failure."""
+    from resource_profiler import ResourceProfiler
+
     if not os.path.exists(config_path):
         logger.error("Config file not found: %s", config_path)
         return 2
@@ -229,6 +277,8 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
     fail_count = 0
     adb_failure_streak = 0
     MAX_ADB_FAILURES = 5
+
+    profiler = ResourceProfiler(serial=serial)
 
     for model in models:
         model_path = model["path"]
@@ -265,6 +315,8 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
             lang = prompt_entry.get("lang", "en")
             prompt_text = prompt_entry["prompt"]
 
+            profiler.reset()
+
             logger.info("Initializing device...")
             adb_run(["adb", "shell", "am", "force-stop", PACKAGE_NAME], serial=serial)
             adb_run(["adb", "logcat", "-c"], serial=serial)
@@ -289,6 +341,9 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
 
             logger.info("[%d/%d] [%s] [%s] [%s] [%s] %s...",
                         current, total, prompt_id, engine, category, lang, prompt_text[:40])
+
+            # ── Phase 6: Pre-inference profiling ──
+            profiler.collect_pre()
 
             am_cmd = (
                 f"am start -W -S"
@@ -332,8 +387,18 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                 print(".", end="", flush=True)
                 time.sleep(2)
 
+            # ── Phase 6: Post-inference profiling ──
+            profiler.collect_post(package=PACKAGE_NAME)
+            profile_data = profiler.get_profile().to_flat_dict()
+
             if success:
                 success_count += 1
+                # 성공 시: profile JSON을 별도 저장 → ingest.py에서 result와 매칭
+                inference_timestamp = int(datetime.now().timestamp() * 1000)
+                save_profile_json(
+                    serial, model_name, prompt_id,
+                    inference_timestamp, profile_data,
+                )
             else:
                 elapsed = time.time() - start_time
                 if elapsed >= timeout_sec:
@@ -343,11 +408,16 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                 else:
                     reason = "App error or crash — no result file generated"
                 logger.warning("[FAILED] [%s] %s — %s", prompt_id, model_name, reason)
+                # 실패 시: error JSON에 프로파일링 데이터 포함
                 save_pc_error_json(
                     serial, model_path, model_name, backend, engine,
                     prompt_id, category, lang, prompt_text, reason,
+                    profile_data=profile_data,
                 )
                 fail_count += 1
+
+            # ── Phase 6: Inter-test thermal guard ──
+            _inter_test_thermal_check(profiler, serial, model_name)
 
             time.sleep(5)
 
@@ -360,6 +430,32 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
     if fail_count > 0:
         return 1  # Partial failure (still continue pipeline)
     return 0
+
+
+# ── Phase 6: Inter-test thermal check ─────────────────────────────────────────
+
+def _inter_test_thermal_check(profiler, serial: str | None, model_name: str) -> None:
+    """추론 후 온도가 임계값 초과 시 쿨다운 대기.
+
+    profiler의 post-inference 온도를 확인하여, INTER_TEST_THERMAL_THRESHOLD를
+    초과하면 device_discovery.wait_for_cool_down()으로 쿨다운 대기.
+    이를 통해 연속 테스트 간 벤치마크 공정성을 유지.
+    """
+    profile = profiler.get_profile()
+    if not profile.battery_after or not profile.battery_after.temperature:
+        return
+
+    temp = profile.battery_after.temperature
+    if temp > INTER_TEST_THERMAL_THRESHOLD:
+        logger.warning(
+            "[THERMAL:INTER] Post-inference temp %.1f°C > %.1f°C — cooling down before next test",
+            temp / 10, INTER_TEST_THERMAL_THRESHOLD / 10,
+        )
+        try:
+            from device_discovery import wait_for_cool_down
+            wait_for_cool_down(serial or "", model_name)
+        except ImportError:
+            logger.warning("[THERMAL:INTER] device_discovery not available — skipping cooldown")
 
 
 # ── Multi-Device Orchestration ────────────────────────────────────────────────

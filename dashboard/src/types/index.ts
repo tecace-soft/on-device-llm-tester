@@ -47,6 +47,35 @@ export interface Metrics {
   itl_p99_ms: number | null
 }
 
+// ── Phase 6: Resource Profile ───────────────────────────────────────────────
+
+export interface ResourceProfile {
+  battery_level_start: number | null
+  battery_level_end: number | null
+  battery_delta: number | null
+  thermal_start: number | null
+  thermal_end: number | null
+  thermal_delta: number | null
+  thermal_start_celsius: number | null
+  thermal_end_celsius: number | null
+  voltage_start_mv: number | null
+  voltage_end_mv: number | null
+  voltage_delta_mv: number | null
+  current_before_ua: number | null
+  current_after_ua: number | null
+  current_delta_ua: number | null
+  system_pss_mb: number | null
+  profiling_error: string | null
+}
+
+export interface ResourceSummary {
+  avg_thermal_delta_celsius: number | null
+  avg_voltage_delta_mv: number | null
+  avg_current_delta_ua: number | null
+  avg_system_pss_mb: number | null
+  profiling_coverage: number | null
+}
+
 // ── Result ──────────────────────────────────────────────────────────────────
 
 export type ResultStatus = 'success' | 'error'
@@ -69,6 +98,7 @@ export interface ResultItem {
   error: string | null
   timestamp: number | null
   run_id: string | null
+  resource_profile: ResourceProfile | null
 }
 
 export type ResultSuccess = ResultItem & { status: 'success'; latency_ms: number; backend: string }
@@ -97,6 +127,7 @@ export interface SummaryStats {
   avg_peak_native_mem_mb: number | null
   avg_peak_java_mem_mb: number | null
   avg_output_tokens: number | null
+  resource: ResourceSummary | null
 }
 
 export interface ModelSummary {

@@ -54,6 +54,27 @@ class Metrics(BaseModel):
     itl_p99_ms: Optional[float] = None
 
 
+# ── Phase 6: Resource Profile ─────────────────────────────────────────────────
+
+class ResourceProfile(BaseModel):
+    battery_level_start: Optional[int] = None
+    battery_level_end: Optional[int] = None
+    battery_delta: Optional[int] = None
+    thermal_start: Optional[int] = None
+    thermal_end: Optional[int] = None
+    thermal_delta: Optional[int] = None
+    thermal_start_celsius: Optional[float] = None
+    thermal_end_celsius: Optional[float] = None
+    voltage_start_mv: Optional[int] = None
+    voltage_end_mv: Optional[int] = None
+    voltage_delta_mv: Optional[int] = None
+    current_before_ua: Optional[int] = None
+    current_after_ua: Optional[int] = None
+    current_delta_ua: Optional[int] = None
+    system_pss_mb: Optional[float] = None
+    profiling_error: Optional[str] = None
+
+
 class ResultItem(BaseModel):
     status: str
     prompt_id: str = ""
@@ -72,6 +93,7 @@ class ResultItem(BaseModel):
     error: Optional[str] = None
     timestamp: Optional[Any] = None
     run_id: Optional[str] = None
+    resource_profile: Optional[ResourceProfile] = None
 
 
 # ── Summary / aggregate shapes ─────────────────────────────────────────────────
@@ -83,6 +105,16 @@ class PercentileStats(BaseModel):
     avg: float
     min: float
     max: float
+
+
+# ── Phase 6: Resource Summary ─────────────────────────────────────────────────
+
+class ResourceSummary(BaseModel):
+    avg_thermal_delta_celsius: Optional[float] = None
+    avg_voltage_delta_mv: Optional[float] = None
+    avg_current_delta_ua: Optional[float] = None
+    avg_system_pss_mb: Optional[float] = None
+    profiling_coverage: Optional[float] = None
 
 
 class SummaryStats(BaseModel):
@@ -98,6 +130,7 @@ class SummaryStats(BaseModel):
     avg_peak_native_mem_mb: Optional[float] = None
     avg_peak_java_mem_mb: Optional[float] = None
     avg_output_tokens: Optional[float] = None
+    resource: Optional[ResourceSummary] = None
 
 
 class ModelSummary(BaseModel):
