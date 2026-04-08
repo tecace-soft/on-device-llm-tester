@@ -2,10 +2,14 @@
   "timeout_sec": 180,
   "models": [
     {
-      "path": "/data/local/tmp/llm_test/models/gemma-4-E2B-it-web.task",
+      "path": "/data/local/tmp/llm_test/models/gemma-4-E2B-it-Q3_K_M.gguf",
       "max_tokens": 1024,
-      "backend": "CPU",
-      "engine": "mediapipe"
+      "engine": "llamacpp",
+      "engine_params": {
+        "n_gpu_layers": "0",
+        "n_threads": "4",
+        "n_ctx": "2048"
+      }
     },
     {
       "path": "/data/local/tmp/llm_test/models/gemma-4-E2B-it-Q4_K_M.gguf",
@@ -18,7 +22,7 @@
       }
     },
     {
-      "path": "/data/local/tmp/llm_test/models/gemma-4-E2B-it-Q3_K_M.gguf",
+      "path": "/data/local/tmp/llm_test/models/gemma-4-E2B-it-Q8_0.gguf",
       "max_tokens": 1024,
       "engine": "llamacpp",
       "engine_params": {
