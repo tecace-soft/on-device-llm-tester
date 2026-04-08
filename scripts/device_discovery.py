@@ -15,7 +15,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-THERMAL_THRESHOLD = 350    # 35.0°C (Android battery temperature: 10분의 1도 단위)
+THERMAL_THRESHOLD = 400    # 40.0°C (Android battery temperature: 10분의 1도 단위)
 THERMAL_WAIT_SEC = 30      # 대기 간격 (초)
 THERMAL_MAX_WAIT = 300     # 최대 대기 시간 (5분)
 

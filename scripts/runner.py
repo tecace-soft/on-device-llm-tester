@@ -20,9 +20,6 @@ ADB_RETRY_DELAY = 2
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCAL_RESULTS_DIR = os.path.join(_PROJECT_ROOT, "results")
 
-# ── Phase 6: Inter-test thermal guard ─────────────────────────────────────────
-INTER_TEST_THERMAL_THRESHOLD = 380  # 38.0°C — 개별 테스트 간 쿨다운 임계값
-
 
 # ── ADB helpers with retry ────────────────────────────────────────────────────
 
@@ -416,9 +413,6 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
                 )
                 fail_count += 1
 
-            # ── Phase 6: Inter-test thermal guard ──
-            _inter_test_thermal_check(profiler, serial, model_name)
-
             time.sleep(5)
 
     logger.info("=== Batch Testing Complete (%d/%d) — success: %d, failed: %d ===",
@@ -430,32 +424,6 @@ def run_test_batch(config_path: str = "test_config.json", serial: str | None = N
     if fail_count > 0:
         return 1  # Partial failure (still continue pipeline)
     return 0
-
-
-# ── Phase 6: Inter-test thermal check ─────────────────────────────────────────
-
-def _inter_test_thermal_check(profiler, serial: str | None, model_name: str) -> None:
-    """추론 후 온도가 임계값 초과 시 쿨다운 대기.
-
-    profiler의 post-inference 온도를 확인하여, INTER_TEST_THERMAL_THRESHOLD를
-    초과하면 device_discovery.wait_for_cool_down()으로 쿨다운 대기.
-    이를 통해 연속 테스트 간 벤치마크 공정성을 유지.
-    """
-    profile = profiler.get_profile()
-    if not profile.battery_after or not profile.battery_after.temperature:
-        return
-
-    temp = profile.battery_after.temperature
-    if temp > INTER_TEST_THERMAL_THRESHOLD:
-        logger.warning(
-            "[THERMAL:INTER] Post-inference temp %.1f°C > %.1f°C — cooling down before next test",
-            temp / 10, INTER_TEST_THERMAL_THRESHOLD / 10,
-        )
-        try:
-            from device_discovery import wait_for_cool_down
-            wait_for_cool_down(serial or "", model_name)
-        except ImportError:
-            logger.warning("[THERMAL:INTER] device_discovery not available — skipping cooldown")
 
 
 # ── Multi-Device Orchestration ────────────────────────────────────────────────
