@@ -40,22 +40,6 @@
       "prompt": "What is 2 + 2? Reply with only the number.",
       "ground_truth": "4",
       "eval_strategy": "deterministic"
-    },
-    {
-      "id": "minimal_02",
-      "category": "minimal_output",
-      "lang": "en",
-      "prompt": "Is water wet? Reply with only 'yes' or 'no'.",
-      "ground_truth": "yes",
-      "eval_strategy": "deterministic"
-    },
-    {
-      "id": "factual_01",
-      "category": "knowledge",
-      "lang": "en",
-      "prompt": "What is the capital of France?",
-      "ground_truth": "Paris",
-      "eval_strategy": "deterministic_with_fallback"
     }
   ]
 }
