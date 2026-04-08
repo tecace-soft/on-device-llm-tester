@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS results (
     itl_p95_ms            REAL,
     itl_p99_ms            REAL,
 
+    -- Phase 6: Resource profiling columns
+    battery_level_start   INTEGER,
+    battery_level_end     INTEGER,
+    thermal_start         INTEGER,
+    thermal_end           INTEGER,
+    voltage_start_mv      INTEGER,
+    voltage_end_mv        INTEGER,
+    current_before_ua     INTEGER,
+    current_after_ua      INTEGER,
+    system_pss_mb         REAL,
+    profiling_error       TEXT,
+
     timestamp  INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
 
@@ -124,6 +136,23 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         model_cols = {row[1] async for row in cur}
     if "engine" not in model_cols:
         await db.execute("ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'mediapipe'")
+
+    # Phase 6: resource profiling columns on results
+    phase6_cols = {
+        "battery_level_start": "INTEGER",
+        "battery_level_end": "INTEGER",
+        "thermal_start": "INTEGER",
+        "thermal_end": "INTEGER",
+        "voltage_start_mv": "INTEGER",
+        "voltage_end_mv": "INTEGER",
+        "current_before_ua": "INTEGER",
+        "current_after_ua": "INTEGER",
+        "system_pss_mb": "REAL",
+        "profiling_error": "TEXT",
+    }
+    for col_name, col_type in phase6_cols.items():
+        if col_name not in result_cols:
+            await db.execute(f"ALTER TABLE results ADD COLUMN {col_name} {col_type}")
 
     await db.commit()
 
