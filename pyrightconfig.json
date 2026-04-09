@@ -1,0 +1,5 @@
+{
+  "extraPaths": ["api", "scripts"],
+  "pythonVersion": "3.12",
+  "reportMissingImports": "warning"
+}

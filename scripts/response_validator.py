@@ -43,6 +43,7 @@ sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
 from validators.sanity import run_sanity_checks, check_gibberish
 from validators.deterministic import eval_math, eval_containment
 from validators.structural import eval_json_structure, eval_python_syntax, eval_markdown_table
+from utils import extract_base_and_quant
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -259,8 +260,11 @@ def validate_row(row: sqlite3.Row, config: dict) -> ValidationResult:
 def compute_all_quant_diffs(con: sqlite3.Connection) -> list[dict]:
     """Compare responses across different quantizations for same prompt + model base.
 
-    Groups by prompt_id and model base name (strip quantization suffix),
+    Groups by (prompt_id, base_model) using extract_base_and_quant(),
     then computes SequenceMatcher ratio between response pairs.
+
+    Architecture: QUANT_COMPARISON_ARCHITECTURE.md §3.4
+    Depends on: api/utils.py extract_base_and_quant()
     """
     rows = con.execute("""
         SELECT p.prompt_id, p.prompt_text, m.model_name,
@@ -272,20 +276,23 @@ def compute_all_quant_diffs(con: sqlite3.Connection) -> list[dict]:
         ORDER BY p.prompt_id, m.model_name
     """).fetchall()
 
-    # Group by prompt_id
-    groups: dict[str, list[dict]] = {}
+    # Group by (prompt_id, base_model) — only compare same-base quants
+    groups: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
-        pid = row["prompt_id"]
-        if pid not in groups:
-            groups[pid] = []
-        groups[pid].append({
+        base, quant = extract_base_and_quant(row["model_name"])
+        if quant == "unknown":
+            continue
+        key = (row["prompt_id"], base)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append({
             "model_name": row["model_name"],
             "response": row["response"],
             "prompt_text": row["prompt_text"],
         })
 
     diffs = []
-    for pid, entries in groups.items():
+    for (pid, _base), entries in groups.items():
         if len(entries) < 2:
             continue
         # Compare all pairs

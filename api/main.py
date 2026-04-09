@@ -26,6 +26,9 @@ from schemas import (
     ModelSummary,
     ModelValidation,
     PaginationMeta,
+    QuantComparisonResponse,
+    QuantDiffItem,
+    QuantSimilarityResponse,
     ResultItem,
     RunItem,
     SummaryStats,
@@ -37,6 +40,9 @@ from stats import (
     compute_by_model,
     compute_compare,
     compute_compare_devices,
+    compute_quant_comparison,
+    compute_quant_diff,
+    compute_quant_similarity,
     compute_summary,
     compute_validation_summary,
     compute_validation_by_category,
@@ -531,4 +537,44 @@ async def get_validation_by_model(
     device: Optional[str] = Query(None),
 ):
     data = await compute_validation_by_model(_db(request), device=device)
+    return ApiSuccess(data=data)
+
+
+# ── Quantization Comparison endpoints (QUANT_COMPARISON_ARCHITECTURE §4) ──────
+
+
+@app.get("/api/validation/quant-diff", response_model=ApiSuccess[List[QuantDiffItem]])
+async def get_quant_diff(
+    request: Request,
+    device: Optional[str] = Query(None),
+    base_model: Optional[str] = Query(None),
+):
+    data = await compute_quant_diff(
+        _db(request), device=device, base_model=base_model,
+    )
+    return ApiSuccess(data=data)
+
+
+@app.get("/api/quant/comparison", response_model=ApiSuccess[QuantComparisonResponse])
+async def get_quant_comparison(
+    request: Request,
+    device: Optional[str] = Query(None),
+    base_model: Optional[str] = Query(None),
+    run_id: Optional[str] = Query(None),
+):
+    data = await compute_quant_comparison(
+        _db(request), device=device, base_model=base_model, run_id=run_id,
+    )
+    return ApiSuccess(data=data)
+
+
+@app.get("/api/quant/similarity", response_model=ApiSuccess[QuantSimilarityResponse])
+async def get_quant_similarity(
+    request: Request,
+    device: Optional[str] = Query(None),
+    base_model: Optional[str] = Query(None),
+):
+    data = await compute_quant_similarity(
+        _db(request), device=device, base_model=base_model,
+    )
     return ApiSuccess(data=data)

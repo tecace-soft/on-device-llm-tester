@@ -2,3 +2,4 @@ python-dotenv     # 설정값(.env) 관리
 huggingface_hub   # 모델 다운로드
 pandas
 openpyxl
+pytest

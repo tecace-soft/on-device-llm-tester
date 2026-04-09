@@ -427,3 +427,304 @@ async def compute_validation_by_model(
             )
         )
     return results
+
+
+# ── Quantization Comparison (QUANT_COMPARISON_ARCHITECTURE §7) ───────────────
+
+import re
+from difflib import SequenceMatcher
+from itertools import groupby
+from operator import itemgetter
+
+from utils import extract_base_and_quant, select_baseline, generate_insight, QUANT_RANK
+from schemas import (
+    QuantComparisonGroup,
+    QuantComparisonItem,
+    QuantComparisonResponse,
+    QuantBaseline,
+    QuantDiffItem,
+    QuantPerformance,
+    QuantQuality,
+    QuantResource,
+    QuantSimilarityItem,
+    QuantSimilarityResponse,
+    QuantSimilaritySummary,
+)
+
+
+async def compute_quant_diff(
+    db: aiosqlite.Connection,
+    device: Optional[str] = None,
+    base_model: Optional[str] = None,
+) -> list[QuantDiffItem]:
+    """Prompt-level response similarity across quantizations.
+
+    Async port of scripts/response_validator.py compute_all_quant_diffs(),
+    with base_model filtering and category field.
+
+    Architecture: QUANT_COMPARISON_ARCHITECTURE.md §7.3
+    Used by: GET /api/validation/quant-diff, compute_quant_similarity()
+    """
+    where_parts = ["r.status = 'success'", "r.response != ''"]
+    params: list = []
+    if device:
+        where_parts.append("d.model = ?")
+        params.append(device)
+
+    where = "WHERE " + " AND ".join(where_parts)
+
+    q = f"""
+        SELECT p.prompt_id, p.prompt_text, p.category,
+               m.model_name, r.response, r.validation_status
+        FROM results r
+        JOIN prompts p ON r.prompt_id = p.id
+        JOIN models  m ON r.model_id  = m.id
+        JOIN devices d ON r.device_id = d.id
+        {where}
+        ORDER BY p.prompt_id, m.model_name
+    """
+    async with db.execute(q, params) as cur:
+        rows = await cur.fetchall()
+
+    # Group by (prompt_id, base_model)
+    groups: dict[tuple[str, str], list] = {}
+    for row in rows:
+        base, quant = extract_base_and_quant(row["model_name"])
+        if quant == "unknown":
+            continue
+        if base_model and base != base_model:
+            continue
+        key = (row["prompt_id"], base)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(dict(row))
+
+    diffs: list[QuantDiffItem] = []
+    for (_pid, _base), entries in groups.items():
+        if len(entries) < 2:
+            continue
+        for i in range(len(entries)):
+            for j in range(i + 1, len(entries)):
+                a, b = entries[i], entries[j]
+                a_norm = re.sub(r'\s+', ' ', a["response"].lower().strip())
+                b_norm = re.sub(r'\s+', ' ', b["response"].lower().strip())
+                ratio = SequenceMatcher(None, a_norm.split(), b_norm.split()).ratio()
+                diffs.append(QuantDiffItem(
+                    prompt_id=_pid,
+                    prompt_text=a["prompt_text"][:80],
+                    category=a["category"] or "",
+                    model_a=a["model_name"],
+                    model_b=b["model_name"],
+                    match_ratio=round(ratio, 3),
+                    a_length=len(a["response"]),
+                    b_length=len(b["response"]),
+                ))
+    return diffs
+
+
+# ── SQL for quant aggregation ─────────────────────────────────────────────────
+
+_QUANT_AGG_BASE = """
+    SELECT
+        m.model_name,
+        COUNT(*)                                            AS result_count,
+        AVG(r.decode_tps)                                   AS avg_decode_tps,
+        AVG(r.latency_ms)                                   AS avg_latency_ms,
+        AVG(r.ttft_ms)                                      AS avg_ttft_ms,
+        AVG(r.prefill_tps)                                  AS avg_prefill_tps,
+        AVG(r.output_token_count)                           AS avg_output_tokens,
+        AVG(r.battery_level_end - r.battery_level_start)    AS avg_battery_delta,
+        AVG(r.thermal_end / 10.0)                           AS avg_thermal_end_celsius,
+        AVG((r.thermal_end - r.thermal_start) / 10.0)       AS avg_thermal_delta_celsius,
+        AVG(r.system_pss_mb)                                AS avg_system_pss_mb,
+        SUM(CASE WHEN r.validation_status = 'pass'      THEN 1 ELSE 0 END) AS v_pass,
+        SUM(CASE WHEN r.validation_status = 'fail'      THEN 1 ELSE 0 END) AS v_fail,
+        SUM(CASE WHEN r.validation_status = 'warn'      THEN 1 ELSE 0 END) AS v_warn,
+        SUM(CASE WHEN r.validation_status = 'uncertain' THEN 1 ELSE 0 END) AS v_uncertain,
+        SUM(CASE WHEN r.validation_status = 'skip'      THEN 1 ELSE 0 END) AS v_skip
+    FROM results r
+    JOIN models  m ON r.model_id  = m.id
+    JOIN devices d ON r.device_id = d.id
+"""
+
+
+def _build_quant_item(row: dict) -> QuantComparisonItem:
+    """Convert a SQL aggregate row + extracted quant into QuantComparisonItem."""
+    total = row["result_count"]
+    v_skip = row["v_skip"] or 0
+    v_pass = row["v_pass"] or 0
+    evaluable = total - v_skip
+
+    return QuantComparisonItem(
+        model_name=row["model_name"],
+        quant_level=row["quant"],
+        result_count=total,
+        performance=QuantPerformance(
+            avg_decode_tps=_round_opt(row["avg_decode_tps"]),
+            avg_latency_ms=_round_opt(row["avg_latency_ms"]),
+            avg_ttft_ms=_round_opt(row["avg_ttft_ms"]),
+            avg_prefill_tps=_round_opt(row["avg_prefill_tps"]),
+            avg_output_tokens=_round_opt(row["avg_output_tokens"]),
+        ),
+        quality=QuantQuality(
+            total=total,
+            pass_count=v_pass,
+            fail_count=row["v_fail"] or 0,
+            warn_count=row["v_warn"] or 0,
+            uncertain_count=row["v_uncertain"] or 0,
+            pass_rate=round(v_pass / evaluable, 4) if evaluable > 0 else 0.0,
+        ),
+        resource=QuantResource(
+            avg_battery_delta=_round_opt(row["avg_battery_delta"]),
+            avg_thermal_end_celsius=_round_opt(row["avg_thermal_end_celsius"]),
+            avg_thermal_delta_celsius=_round_opt(row["avg_thermal_delta_celsius"]),
+            avg_system_pss_mb=_round_opt(row["avg_system_pss_mb"]),
+        ),
+    )
+
+
+def _round_opt(val, ndigits: int = 2) -> Optional[float]:
+    return round(val, ndigits) if val is not None else None
+
+
+def _compute_delta(q: QuantComparisonItem, baseline: QuantComparisonItem) -> QuantBaseline:
+    """Calculate percentage change of q relative to baseline."""
+    def _pct(cur: Optional[float], base: Optional[float]) -> Optional[float]:
+        if cur is None or base is None or base == 0:
+            return None
+        return round((cur - base) / abs(base) * 100, 1)
+
+    return QuantBaseline(
+        baseline_quant=baseline.quant_level,
+        quant_level=q.quant_level,
+        tps_change_pct=_pct(q.performance.avg_decode_tps, baseline.performance.avg_decode_tps),
+        latency_change_pct=_pct(q.performance.avg_latency_ms, baseline.performance.avg_latency_ms),
+        pass_rate_change_pct=_pct(q.quality.pass_rate, baseline.quality.pass_rate),
+        battery_change_pct=_pct(q.resource.avg_battery_delta, baseline.resource.avg_battery_delta),
+    )
+
+
+async def compute_quant_comparison(
+    db: aiosqlite.Connection,
+    device: Optional[str] = None,
+    base_model: Optional[str] = None,
+    run_id: Optional[str] = None,
+) -> QuantComparisonResponse:
+    """Aggregated performance + quality + resource comparison across quantizations.
+
+    Architecture: QUANT_COMPARISON_ARCHITECTURE.md §7.1, §7.2
+    Used by: GET /api/quant/comparison
+    Depends on: extract_base_and_quant(), select_baseline(), generate_insight()
+    """
+    where_parts = ["r.status = 'success'"]
+    params: list = []
+    if device:
+        where_parts.append("d.model = ?")
+        params.append(device)
+    if run_id:
+        where_parts.append("r.run_id = (SELECT id FROM runs WHERE run_id = ?)")
+        params.append(run_id)
+
+    where = "WHERE " + " AND ".join(where_parts)
+    sql = f"{_QUANT_AGG_BASE} {where} GROUP BY m.model_name"
+
+    async with db.execute(sql, params) as cur:
+        rows = await cur.fetchall()
+
+    # Tag with base_name and quant_level
+    tagged = []
+    for row in rows:
+        base, quant = extract_base_and_quant(row["model_name"])
+        if quant == "unknown":
+            continue
+        if base_model and base != base_model:
+            continue
+        tagged.append({"base": base, "quant": quant, **dict(row)})
+
+    # Group by base_model
+    tagged.sort(key=itemgetter("base"))
+    result_groups: list[QuantComparisonGroup] = []
+    for base, items_iter in groupby(tagged, key=itemgetter("base")):
+        quant_rows = list(items_iter)
+        if len(quant_rows) < 2:
+            continue
+
+        quants = [_build_quant_item(qr) for qr in quant_rows]
+        baseline = select_baseline(quants)
+        deltas = [
+            _compute_delta(q_item, baseline)
+            for q_item in quants
+            if q_item.quant_level != baseline.quant_level
+        ]
+        insight = generate_insight(quants, deltas)
+
+        result_groups.append(QuantComparisonGroup(
+            base_model=base,
+            device=device,
+            quants=quants,
+            deltas=deltas,
+            insight=insight,
+        ))
+
+    return QuantComparisonResponse(groups=result_groups)
+
+
+async def compute_quant_similarity(
+    db: aiosqlite.Connection,
+    device: Optional[str] = None,
+    base_model: Optional[str] = None,
+) -> QuantSimilarityResponse:
+    """Per-prompt similarity matrix within a base model's quantizations.
+
+    Reuses compute_quant_diff() and adds category aggregation + overall average.
+
+    Architecture: QUANT_COMPARISON_ARCHITECTURE.md §7.4
+    Used by: GET /api/quant/similarity
+    Depends on: compute_quant_diff(), extract_base_and_quant()
+    """
+    diffs = await compute_quant_diff(db, device=device, base_model=base_model)
+
+    # Category averages
+    cat_map: dict[str, dict] = {}
+    for d in diffs:
+        cat = d.category or "uncategorized"
+        if cat not in cat_map:
+            cat_map[cat] = {"total": 0.0, "count": 0}
+        cat_map[cat]["total"] += d.match_ratio
+        cat_map[cat]["count"] += 1
+
+    by_category = [
+        QuantSimilaritySummary(
+            category=cat,
+            avg_match_ratio=round(v["total"] / v["count"], 3),
+            pair_count=v["count"],
+        )
+        for cat, v in sorted(cat_map.items())
+    ]
+
+    overall = round(sum(d.match_ratio for d in diffs) / len(diffs), 3) if diffs else 0.0
+
+    # Convert QuantDiffItem → QuantSimilarityItem (add quant_a/b)
+    similarity_items: list[QuantSimilarityItem] = []
+    for d in diffs:
+        _, qa = extract_base_and_quant(d.model_a)
+        _, qb = extract_base_and_quant(d.model_b)
+        similarity_items.append(QuantSimilarityItem(
+            prompt_id=d.prompt_id,
+            prompt_text=d.prompt_text,
+            category=d.category,
+            model_a=d.model_a,
+            model_b=d.model_b,
+            quant_a=qa,
+            quant_b=qb,
+            match_ratio=d.match_ratio,
+            a_length=d.a_length,
+            b_length=d.b_length,
+        ))
+
+    return QuantSimilarityResponse(
+        base_model=base_model or "all",
+        pairs=similarity_items,
+        by_category=by_category,
+        overall_avg_ratio=overall,
+    )

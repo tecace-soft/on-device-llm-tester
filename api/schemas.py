@@ -198,3 +198,110 @@ class ModelValidation(BaseModel):
     fail_rate: float
     truncation_rate: float
     total: int
+
+
+# ── Quantization Diff (Phase 4a — quant-diff endpoint) ──────────────────────
+
+class QuantDiffItem(BaseModel):
+    """Prompt-level response similarity between model pairs."""
+    prompt_id: str
+    prompt_text: str
+    category: str
+    model_a: str
+    model_b: str
+    match_ratio: float
+    a_length: int
+    b_length: int
+
+
+# ── Quantization Comparison (QUANT_COMPARISON_ARCHITECTURE §5) ──────────────
+
+class QuantPerformance(BaseModel):
+    avg_decode_tps: Optional[float] = None
+    avg_latency_ms: Optional[float] = None
+    avg_ttft_ms: Optional[float] = None
+    avg_prefill_tps: Optional[float] = None
+    avg_output_tokens: Optional[float] = None
+
+
+class QuantQuality(BaseModel):
+    total: int
+    pass_count: int
+    fail_count: int
+    warn_count: int
+    uncertain_count: int
+    pass_rate: float
+
+
+class QuantResource(BaseModel):
+    avg_battery_delta: Optional[float] = None
+    avg_thermal_end_celsius: Optional[float] = None
+    avg_thermal_delta_celsius: Optional[float] = None
+    avg_system_pss_mb: Optional[float] = None
+
+
+class QuantComparisonItem(BaseModel):
+    """Single quantization level's aggregated metrics."""
+    model_name: str
+    quant_level: str
+    result_count: int
+    performance: QuantPerformance
+    quality: QuantQuality
+    resource: QuantResource
+
+
+class QuantBaseline(BaseModel):
+    """Relative change vs baseline quantization (%)."""
+    baseline_quant: str
+    quant_level: str
+    tps_change_pct: Optional[float] = None
+    latency_change_pct: Optional[float] = None
+    pass_rate_change_pct: Optional[float] = None
+    battery_change_pct: Optional[float] = None
+
+
+class QuantComparisonGroup(BaseModel):
+    """Full comparison for one model base across its quantizations."""
+    base_model: str
+    device: Optional[str] = None
+    quants: list[QuantComparisonItem]
+    deltas: list[QuantBaseline]
+    insight: str
+
+
+class QuantComparisonResponse(BaseModel):
+    """GET /api/quant/comparison top-level response."""
+    groups: list[QuantComparisonGroup]
+
+
+# ── Quantization Similarity (QUANT_COMPARISON_ARCHITECTURE §5.2) ────────────
+
+class QuantSimilarityItem(BaseModel):
+    """Prompt-level response similarity within same base model."""
+    prompt_id: str
+    prompt_text: str
+    category: str
+    model_a: str
+    model_b: str
+    quant_a: str
+    quant_b: str
+    match_ratio: float
+    a_length: int
+    b_length: int
+    validation_a: Optional[str] = None
+    validation_b: Optional[str] = None
+
+
+class QuantSimilaritySummary(BaseModel):
+    """Per-category average similarity."""
+    category: str
+    avg_match_ratio: float
+    pair_count: int
+
+
+class QuantSimilarityResponse(BaseModel):
+    """GET /api/quant/similarity response."""
+    base_model: str
+    pairs: list[QuantSimilarityItem]
+    by_category: list[QuantSimilaritySummary]
+    overall_avg_ratio: float
