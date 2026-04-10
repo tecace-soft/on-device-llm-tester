@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, TrendingUp, GitCompare, MessageSquare, Table2, Cpu, History, Smartphone, ShieldCheck, Battery } from 'lucide-react'
+import { LayoutDashboard, TrendingUp, GitCompare, MessageSquare, Table2, Cpu, History, Smartphone, ShieldCheck, Battery, FlaskConical } from 'lucide-react'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Overview', icon: LayoutDashboard },
@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: '/compare', label: 'Compare', icon: GitCompare },
   { to: '/device-compare', label: 'Device Compare', icon: Smartphone },
   { to: '/resource', label: 'Resource', icon: Battery },
+  { to: '/quant-compare', label: 'Quant Compare', icon: FlaskConical },
   { to: '/validation', label: 'Validation', icon: ShieldCheck },
   { to: '/responses', label: 'Responses', icon: MessageSquare },
   { to: '/raw', label: 'Raw Data', icon: Table2 },
@@ -52,7 +53,7 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="px-5 py-4 border-t text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}>
-        v5.0.0 · resource profiling
+        v6.1.0 · quant compare
       </div>
     </aside>
   )

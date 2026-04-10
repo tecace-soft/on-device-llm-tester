@@ -19,6 +19,8 @@ export interface ApiError {
   detail?: string
 }
 
+export type ApiResponse<T> = ApiSuccess<T> | ApiError
+
 // ── Device / Metrics ────────────────────────────────────────────────────────
 
 export interface DeviceInfo {
@@ -214,4 +216,88 @@ export interface ModelValidation {
   fail_rate: number
   truncation_rate: number
   total: number
+}
+
+// ── Quant Compare (Phase 6.1) ───────────────────────────────────────────────
+
+export interface QuantPerformance {
+  avg_decode_tps: number | null
+  avg_latency_ms: number | null
+  avg_ttft_ms: number | null
+  avg_prefill_tps: number | null
+  avg_output_tokens: number | null
+}
+
+export interface QuantQuality {
+  total: number
+  pass_count: number
+  fail_count: number
+  warn_count: number
+  uncertain_count: number
+  pass_rate: number
+}
+
+export interface QuantResource {
+  avg_battery_delta: number | null
+  avg_thermal_end_celsius: number | null
+  avg_thermal_delta_celsius: number | null
+  avg_system_pss_mb: number | null
+}
+
+export interface QuantComparisonItem {
+  model_name: string
+  quant_level: string
+  result_count: number
+  performance: QuantPerformance
+  quality: QuantQuality
+  resource: QuantResource
+}
+
+export interface QuantBaseline {
+  baseline_quant: string
+  quant_level: string
+  tps_change_pct: number | null
+  latency_change_pct: number | null
+  pass_rate_change_pct: number | null
+  battery_change_pct: number | null
+}
+
+export interface QuantComparisonGroup {
+  base_model: string
+  device: string | null
+  quants: QuantComparisonItem[]
+  deltas: QuantBaseline[]
+  insight: string
+}
+
+export interface QuantComparisonResponse {
+  groups: QuantComparisonGroup[]
+}
+
+export interface QuantSimilarityItem {
+  prompt_id: string
+  prompt_text: string
+  category: string
+  model_a: string
+  model_b: string
+  quant_a: string
+  quant_b: string
+  match_ratio: number
+  a_length: number
+  b_length: number
+  validation_a: string | null
+  validation_b: string | null
+}
+
+export interface QuantSimilaritySummary {
+  category: string
+  avg_match_ratio: number
+  pair_count: number
+}
+
+export interface QuantSimilarityResponse {
+  base_model: string
+  pairs: QuantSimilarityItem[]
+  by_category: QuantSimilaritySummary[]
+  overall_avg_ratio: number
 }
