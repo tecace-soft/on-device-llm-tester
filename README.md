@@ -1,14 +1,14 @@
 # On-device LLM Inference Test Automation
 
-> **Project Status:** Phase 6 — Resource Profiling ✅
+> **Project Status:** Phase 6.1 — Quantization Comparison ✅
 
 Android 기기에서 구동되는 LLM(MediaPipe + llama.cpp 기반)의 추론 성능 및 결과 품질을 자동으로 벤치마킹하는 파이프라인입니다. GitHub Actions self-hosted runner를 통해 ADB 연결된 복수의 실물 기기에서 CI 실행이 가능합니다.
 
-**Phase 6**에서는 배터리, 온도(thermal), 전압, 전류, 시스템 메모리(PSS) 프로파일링을 추가하여 "얼마나 빠른가(TPS)" 뿐만 아니라 "얼마나 효율적인가(Resource)"를 측정합니다.
+**Phase 6.1**에서는 같은 base model의 양자화 변형(Q3_K_M, Q4_K_M, Q8_0 등)을 **성능 + 품질 + 리소스** 3축으로 통합 비교하여 최적의 양자화 레벨을 찾는 파이프라인을 추가했습니다.
 
 ---
 
-## 1. Prerequisites
+## 1. Prerequisitesz
 
 | 항목 | 요구사항 |
 |------|---------|
@@ -98,8 +98,9 @@ on-device-llm-tester/
 │   ├── main.py                    # 엔드포인트 + CORS + auth
 │   ├── db.py                      # SQLite 연결 + 스키마 초기화 + 마이그레이션
 │   ├── loader.py                  # SQL SELECT 기반 데이터 로드 (resource_profile 포함)
-│   ├── stats.py                   # SQL 집계 (resource summary 포함)
-│   ├── schemas.py                 # Pydantic 스키마 (ResourceProfile, ResourceSummary)
+│   ├── stats.py                   # SQL 집계 (resource summary + quant comparison 포함)
+│   ├── schemas.py                 # Pydantic 스키마 (Quant* 스키마 포함)
+│   ├── utils.py                   # ✨ Phase 6.1: extract_base_and_quant, select_baseline, generate_insight
 │   ├── requirements.txt
 │   └── data/
 │       └── llm_tester.db          # SQLite DB (gitignore됨)
@@ -107,14 +108,24 @@ on-device-llm-tester/
 ├── dashboard/                     # React + Vite + TypeScript (:5173)
 │   └── src/
 │       ├── pages/
-│       │   ├── Resource.tsx           # ✨ Phase 6: 리소스 프로파일링 대시보드
+│       │   ├── Resource.tsx           # Phase 6: 리소스 프로파일링 대시보드
+│       │   ├── QuantCompare.tsx       # ✨ Phase 6.1: 양자화 비교 대시보드
 │       │   └── ...
 │       ├── hooks/
+│       │   └── useQuantCompare.ts     # ✨ Phase 6.1: comparison + similarity 병렬 호출
 │       ├── types/
-│       │   └── index.ts               # ResourceProfile, ResourceSummary 타입
+│       │   └── index.ts               # Quant* 타입 + QuantDiffItem 포함
 │       └── components/
-│           └── layout/
-│               └── Sidebar.tsx        # Resource 메뉴 포함
+│           ├── layout/
+│           │   └── Sidebar.tsx        # Quant Compare 메뉴 포함 (v6.1.0)
+│           ├── quant/                 # ✨ Phase 6.1
+│           │   ├── InsightCards.tsx
+│           │   ├── ComparisonTable.tsx
+│           │   ├── TradeoffRadar.tsx
+│           │   ├── SimilarityMatrix.tsx
+│           │   └── CategorySimilarity.tsx
+│           └── validation/
+│               └── QuantDiffTable.tsx  # ✨ Phase 6.1: Validation 페이지 응답 유사도
 │
 ├── scripts/
 │   ├── setup.py                   # 초기 폴더 구조 생성
@@ -389,6 +400,9 @@ API에서 computed field로 제공되는 파생 지표:
 | GET | `/api/validation/summary` | 검증 결과 집계 |
 | GET | `/api/validation/by-category` | 카테고리별 검증 분포 |
 | GET | `/api/validation/by-model` | 모델별 검증 비교 |
+| GET | `/api/validation/quant-diff` | ✨ 양자화 간 응답 유사도 (전체 모델 pair) |
+| GET | `/api/quant/comparison` | ✨ 양자화별 성능+품질+리소스 통합 비교 |
+| GET | `/api/quant/similarity` | ✨ Base model 내 양자화 pair 유사도 + 카테고리 집계 |
 | GET | `/api/models` | 모델 목록 |
 | GET | `/api/devices` | 디바이스 목록 |
 | GET | `/api/categories` | 카테고리 목록 |
@@ -546,6 +560,40 @@ python scripts/response_validator.py --summary-only      # 검증 요약만
 
 ---
 
+## 8.7 Quantization Comparison (Phase 6.1)
+
+같은 base model의 양자화 변형(Q3_K_M, Q4_K_M, Q8_0 등) 간 **성능, 품질, 리소스 소비를 통합 비교**하여 최적의 양자화 레벨을 찾습니다. DB 스키마 변경 없이 기존 데이터를 활용합니다.
+
+### 핵심 개념
+
+- **Base Name 추출**: `gemma-4-E2B-it-Q4_K_M.gguf` → base: `gemma-4-E2B-it`, quant: `Q4_K_M`
+- **Baseline 비교**: 가장 높은 정밀도(Q8_0)를 기준으로 상대 변화율(%) 계산
+- **Insight 자동 생성**: trade-off 분석 기반 추천 (예: "Q4_K_M 추천: 품질 -5.6%, 속도 +3.0%")
+
+### API
+
+| Endpoint | 역할 | 필터 |
+|----------|------|------|
+| `GET /api/quant/comparison` | 성능+품질+리소스 통합 비교 (base model 그룹핑) | `device`, `base_model`, `run_id` |
+| `GET /api/quant/similarity` | Base model 내 양자화 pair 유사도 + 카테고리 집계 | `device`, `base_model` |
+| `GET /api/validation/quant-diff` | 전체 모델 pair 응답 유사도 (Validation 페이지용) | `device`, `base_model` |
+
+### Dashboard — Quant Compare 페이지
+
+독립 페이지 (`/quant-compare`)에서 양자화 trade-off를 시각적으로 분석합니다:
+
+- **Insight Cards**: 자동 생성된 추천 인사이트
+- **Comparison Table**: Baseline(Q8_0) 대비 delta 색상 표시 (↑ 초록 / ↓ 빨강 / 5% 이내 회색)
+- **Trade-off Radar**: Quality / Speed / Efficiency 3축 레이더 차트
+- **Similarity Matrix**: 양자화 pair 간 응답 유사도 N×N 히트맵
+- **Category Similarity**: 카테고리별 평균 유사도 바 차트
+
+### Dashboard — Validation 페이지 연동
+
+Validation 페이지 하단의 **Response Similarity** 섹션에서 전체 모델 pair의 prompt-level 응답 유사도를 표시합니다. Quant Compare 페이지와의 차이: 같은 base model 제약 없이 **모든 모델 pair**를 비교합니다.
+
+---
+
 ## 9. Architecture Documents
 
 | 문서 | 내용 |
@@ -558,6 +606,7 @@ python scripts/response_validator.py --summary-only      # 검증 요약만
 | `QUALITY_EVAL_ARCHITECTURE.md` | Phase 4b LLM Judge 설계 (예정) |
 | `LLMCPP_ARCHITECTURE.md` | Phase 5 llama.cpp 멀티엔진 설계 |
 | `RESOURCE_PROFILING_ARCHITECTURE.md` | **Phase 6 리소스 프로파일링 설계** |
+| `QUANT_COMPARISON_ARCHITECTURE.md` | **Phase 6.1 양자화 비교 파이프라인 설계** |
 
 ---
 
@@ -574,3 +623,4 @@ python scripts/response_validator.py --summary-only      # 검증 요약만
 | 4b | AI Quality Eval (LLM Judge) | 🔜 |
 | 5 | llama.cpp Multi-Engine | ✅ |
 | 6 | Resource Profiling (Battery/Thermal/Memory) | ✅ |
+| 6.1 | Quantization Comparison Pipeline | ✅ |

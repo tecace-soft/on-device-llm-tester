@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import client, { ApiClientError } from '@/api/client'
-import type { ApiSuccess, ValidationSummary, CategoryValidation, ModelValidation } from '@/types'
+import type { ApiSuccess, ValidationSummary, CategoryValidation, ModelValidation, QuantDiffItem } from '@/types'
 
 interface AsyncState<T> {
   data: T | null
@@ -76,6 +76,16 @@ export function useValidationByModel(filters?: { device?: string }) {
   return useVAsync<ModelValidation[]>(
     async () => {
       const res = await client.get<ApiSuccess<ModelValidation[]>>('/validation/by-model', { params: filters })
+      return res.data.data
+    },
+    [filters?.device],
+  )
+}
+
+export function useQuantDiff(filters?: { device?: string }) {
+  return useVAsync<QuantDiffItem[]>(
+    async () => {
+      const res = await client.get<ApiSuccess<QuantDiffItem[]>>('/validation/quant-diff', { params: filters })
       return res.data.data
     },
     [filters?.device],

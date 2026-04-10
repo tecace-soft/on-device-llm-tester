@@ -301,3 +301,16 @@ export interface QuantSimilarityResponse {
   by_category: QuantSimilaritySummary[]
   overall_avg_ratio: number
 }
+
+// ── Validation: Quant Diff ─────────────────────────────────────────────────
+
+export interface QuantDiffItem {
+  prompt_id: string
+  prompt_text: string
+  category: string
+  model_a: string
+  model_b: string
+  match_ratio: number
+  a_length: number
+  b_length: number
+}

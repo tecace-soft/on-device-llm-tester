@@ -6,6 +6,7 @@ import { LoadingSkeleton } from '@/components/feedback/LoadingSkeleton'
 import { CategoryValidationChart } from '@/components/validation/CategoryValidationChart'
 import { ModelValidationChart } from '@/components/validation/ModelValidationChart'
 import { FailLog } from '@/components/validation/FailLog'
+import { QuantDiffTable } from '@/components/validation/QuantDiffTable'
 import { useValidationSummary, useValidationRefresh } from '@/hooks/useValidation'
 import { useDevices, useModels } from '@/hooks/useResults'
 import { useState } from 'react'
@@ -146,6 +147,9 @@ export default function Validation() {
 
             {/* Result Log */}
             <FailLog filters={filters} />
+
+            {/* Quant Diff — response similarity across all model pairs */}
+            <QuantDiffTable filters={{ device }} />
           </>
         )}
       </div>
