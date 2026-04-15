@@ -1,9 +1,14 @@
+import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 import aiosqlite
 
 DB_PATH = os.getenv("DB_PATH", "./data/llm_tester.db")
+DB_MODE = os.getenv("DB_MODE", "local")  # "local" | "turso"
+
+logger = logging.getLogger(__name__)
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS devices (
@@ -108,6 +113,8 @@ _MIGRATE_RUN_ID = """
 ALTER TABLE results ADD COLUMN run_id INTEGER REFERENCES runs(id);
 """
 
+# ── Local (aiosqlite) helpers ──────────────────────────────────────────────────
+
 
 async def _migrate_columns(db: aiosqlite.Connection) -> None:
     """Idempotent column migrations for all phases."""
@@ -173,16 +180,89 @@ async def cleanup_zombie_runs(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+# ── Turso (libsql-client) helpers ─────────────────────────────────────────────
+
+
+async def _migrate_columns_turso(db: Any) -> None:
+    """Idempotent column migrations for Turso.
+
+    Turso does not support the async-context-manager PRAGMA pattern.
+    Instead, try each ALTER TABLE and silently ignore duplicate-column errors.
+    """
+    migrations = [
+        # Phase 2
+        "ALTER TABLE results ADD COLUMN run_id INTEGER REFERENCES runs(id)",
+        # Phase 4a
+        "ALTER TABLE results ADD COLUMN validation_status TEXT",
+        "ALTER TABLE results ADD COLUMN validation_detail TEXT",
+        "ALTER TABLE prompts ADD COLUMN ground_truth TEXT",
+        "ALTER TABLE prompts ADD COLUMN eval_strategy TEXT NOT NULL DEFAULT 'none'",
+        # Phase 5
+        "ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'mediapipe'",
+        # Phase 6
+        "ALTER TABLE results ADD COLUMN battery_level_start INTEGER",
+        "ALTER TABLE results ADD COLUMN battery_level_end INTEGER",
+        "ALTER TABLE results ADD COLUMN thermal_start INTEGER",
+        "ALTER TABLE results ADD COLUMN thermal_end INTEGER",
+        "ALTER TABLE results ADD COLUMN voltage_start_mv INTEGER",
+        "ALTER TABLE results ADD COLUMN voltage_end_mv INTEGER",
+        "ALTER TABLE results ADD COLUMN current_before_ua INTEGER",
+        "ALTER TABLE results ADD COLUMN current_after_ua INTEGER",
+        "ALTER TABLE results ADD COLUMN system_pss_mb REAL",
+        "ALTER TABLE results ADD COLUMN profiling_error TEXT",
+    ]
+    for sql in migrations:
+        try:
+            await db.execute(sql)
+        except Exception as e:
+            # Suppress "duplicate column name" — column already exists
+            if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                logger.warning("Migration skipped (%s): %s", sql.split()[5], e)
+
+
+async def _init_tables_turso(db: Any) -> None:
+    """Create tables on Turso via batch (executescript not supported)."""
+    statements = [s.strip() for s in _DDL.split(";") if s.strip()]
+    await db.batch(statements)
+    await _migrate_columns_turso(db)
+
+
+async def _cleanup_zombie_runs_turso(db: Any) -> None:
+    """Turso version — no commit() needed (auto-committed)."""
+    await db.execute("""
+        UPDATE runs
+        SET status = 'error', finished_at = datetime('now')
+        WHERE status = 'running'
+          AND started_at < datetime('now', '-24 hours')
+    """)
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+
 @asynccontextmanager
 async def lifespan(app):
-    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    await db.execute("PRAGMA busy_timeout=5000")
-    await _init_tables(db)
-    await cleanup_zombie_runs(db)
+    """Architecture: DEPLOYMENT_ARCHITECTURE.md §4.1"""
+    if DB_MODE == "turso":
+        import libsql_client  # type: ignore[import]
+        db = libsql_client.create_client(
+            url=os.getenv("TURSO_URL", ""),
+            auth_token=os.getenv("TURSO_AUTH_TOKEN", ""),
+        )
+        # Turso manages WAL/FK server-side — PRAGMA not needed
+        await _init_tables_turso(db)
+        await _cleanup_zombie_runs_turso(db)
+    else:
+        os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
+        db = await aiosqlite.connect(DB_PATH)
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA foreign_keys=ON")
+        await db.execute("PRAGMA busy_timeout=5000")
+        await _init_tables(db)
+        await cleanup_zombie_runs(db)
+
     app.state.db = db
+    app.state.db_mode = DB_MODE
     yield
     await db.close()

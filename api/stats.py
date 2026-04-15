@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-import aiosqlite
-
+from db_adapter import DbAdapter, Row
 from schemas import (
     CategorySummary,
     CategoryValidation,
@@ -82,15 +81,14 @@ _SUMMARY_SELECT = """
 
 
 async def _percentile(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     pct: float,
     where: str,
     params: list,
 ) -> Optional[float]:
     count_q = f"SELECT COUNT(*) {_JOINS} {where} AND r.status='success' AND r.latency_ms IS NOT NULL"
-    async with db.execute(count_q, params) as cur:
-        row = await cur.fetchone()
-        n = row[0] if row else 0
+    row = await db.fetchone(count_q, tuple(params))
+    n = row[0] if row else 0
 
     if n == 0:
         return None
@@ -102,13 +100,12 @@ async def _percentile(
         ORDER BY r.latency_ms
         LIMIT 1 OFFSET ?
     """
-    async with db.execute(val_q, params + [offset]) as cur:
-        row = await cur.fetchone()
-        return row[0] if row else None
+    row = await db.fetchone(val_q, tuple(params + [offset]))
+    return row[0] if row else None
 
 
 async def _build_resource_summary(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     where: str,
     params: list,
     total: int,
@@ -125,10 +122,9 @@ async def _build_resource_summary(
         {where}
         AND r.battery_level_start IS NOT NULL
     """
-    async with db.execute(q, params) as cur:
-        row = await cur.fetchone()
+    row = await db.fetchone(q, tuple(params))
 
-    profiled = row["profiled"] or 0
+    profiled = row["profiled"] or 0 if row else 0
     if profiled == 0:
         return None
 
@@ -142,20 +138,19 @@ async def _build_resource_summary(
 
 
 async def _build_summary(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     where: str,
     params: list,
 ) -> SummaryStats:
     q = f"{_SUMMARY_SELECT} {_JOINS} {where}"
-    async with db.execute(q, params) as cur:
-        r = await cur.fetchone()
+    r = await db.fetchone(q, tuple(params))
 
-    total = r["total"] or 0
-    success = r["success"] or 0
-    errors = r["errors"] or 0
+    total = r["total"] or 0 if r else 0
+    success = r["success"] or 0 if r else 0
+    errors = r["errors"] or 0 if r else 0
 
     latency_stats: Optional[PercentileStats] = None
-    if success > 0 and r["avg_latency"] is not None:
+    if r and success > 0 and r["avg_latency"] is not None:
         p50 = await _percentile(db, 0.50, where, params)
         p95 = await _percentile(db, 0.95, where, params)
         p99 = await _percentile(db, 0.99, where, params)
@@ -176,13 +171,13 @@ async def _build_summary(
         errors=errors,
         success_rate=round(success / total * 100, 1) if total else 0.0,
         latency=latency_stats,
-        avg_ttft_ms=r["avg_ttft_ms"],
-        avg_decode_tps=r["avg_decode_tps"],
-        avg_prefill_tps=r["avg_prefill_tps"],
-        avg_init_time_ms=r["avg_init_time_ms"],
-        avg_peak_native_mem_mb=r["avg_peak_native_mem_mb"],
-        avg_peak_java_mem_mb=r["avg_peak_java_mem_mb"],
-        avg_output_tokens=r["avg_output_tokens"],
+        avg_ttft_ms=r["avg_ttft_ms"] if r else None,
+        avg_decode_tps=r["avg_decode_tps"] if r else None,
+        avg_prefill_tps=r["avg_prefill_tps"] if r else None,
+        avg_init_time_ms=r["avg_init_time_ms"] if r else None,
+        avg_peak_native_mem_mb=r["avg_peak_native_mem_mb"] if r else None,
+        avg_peak_java_mem_mb=r["avg_peak_java_mem_mb"] if r else None,
+        avg_output_tokens=r["avg_output_tokens"] if r else None,
         resource=resource,
     )
 
@@ -191,7 +186,7 @@ async def _build_summary(
 
 
 async def compute_summary(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     model: Optional[str] = None,
     category: Optional[str] = None,
@@ -204,15 +199,14 @@ async def compute_summary(
 
 
 async def compute_by_model(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     category: Optional[str] = None,
     backend: Optional[str] = None,
 ) -> list[ModelSummary]:
     where, params = _build_where(device, None, category, backend, None)
     q = f"SELECT DISTINCT m.model_name {_JOINS} {where} ORDER BY m.model_name"
-    async with db.execute(q, params) as cur:
-        model_rows = await cur.fetchall()
+    model_rows = await db.fetchall(q, tuple(params))
 
     results = []
     for row in model_rows:
@@ -224,15 +218,14 @@ async def compute_by_model(
 
 
 async def compute_by_category(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     model: Optional[str] = None,
     backend: Optional[str] = None,
 ) -> list[CategorySummary]:
     where, params = _build_where(device, model, None, backend, None)
     q = f"SELECT DISTINCT p.category {_JOINS} {where} AND p.category != '' ORDER BY p.category"
-    async with db.execute(q, params) as cur:
-        cat_rows = await cur.fetchall()
+    cat_rows = await db.fetchall(q, tuple(params))
 
     results = []
     for row in cat_rows:
@@ -244,7 +237,7 @@ async def compute_by_category(
 
 
 async def compute_compare(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     model_names: list[str],
     device: Optional[str] = None,
     backend: Optional[str] = None,
@@ -264,7 +257,7 @@ async def compute_compare(
 
 
 async def compute_compare_devices(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device_models: list[str],
     model: Optional[str] = None,
     backend: Optional[str] = None,
@@ -276,22 +269,21 @@ async def compute_compare_devices(
         stats = await _build_summary(db, where, params)
 
         device_info: dict = {}
-        async with db.execute(
+        dev_row = await db.fetchone(
             "SELECT manufacturer, model, product, soc, android_version, sdk_int, cpu_cores, max_heap_mb FROM devices WHERE model = ?",
             (device_model,),
-        ) as cur:
-            dev_row = await cur.fetchone()
-            if dev_row:
-                device_info = {
-                    "manufacturer": dev_row["manufacturer"],
-                    "model": dev_row["model"],
-                    "product": dev_row["product"],
-                    "soc": dev_row["soc"],
-                    "android_version": dev_row["android_version"],
-                    "sdk_int": dev_row["sdk_int"],
-                    "cpu_cores": dev_row["cpu_cores"],
-                    "max_heap_mb": dev_row["max_heap_mb"],
-                }
+        )
+        if dev_row:
+            device_info = {
+                "manufacturer": dev_row["manufacturer"],
+                "model": dev_row["model"],
+                "product": dev_row["product"],
+                "soc": dev_row["soc"],
+                "android_version": dev_row["android_version"],
+                "sdk_int": dev_row["sdk_int"],
+                "cpu_cores": dev_row["cpu_cores"],
+                "max_heap_mb": dev_row["max_heap_mb"],
+            }
 
         by_cat = await compute_by_category(
             db, device=device_model, model=model, backend=backend
@@ -312,7 +304,7 @@ async def compute_compare_devices(
 
 
 async def compute_validation_summary(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     model: Optional[str] = None,
     run_id: Optional[str] = None,
@@ -330,27 +322,26 @@ async def compute_validation_summary(
         {_JOINS}
         {where}
     """
-    async with db.execute(q, params) as cur:
-        row = await cur.fetchone()
+    row = await db.fetchone(q, tuple(params))
 
-    total = row["total"] or 0
-    v_pass = row["v_pass"] or 0
-    v_skip = row["v_skip"] or 0
+    total = row["total"] or 0 if row else 0
+    v_pass = row["v_pass"] or 0 if row else 0
+    v_skip = row["v_skip"] or 0 if row else 0
     evaluable = total - v_skip
 
     return ValidationSummary(
         total=total,
         pass_count=v_pass,
-        fail_count=row["v_fail"] or 0,
-        warn_count=row["v_warn"] or 0,
-        uncertain_count=row["v_uncertain"] or 0,
+        fail_count=row["v_fail"] or 0 if row else 0,
+        warn_count=row["v_warn"] or 0 if row else 0,
+        uncertain_count=row["v_uncertain"] or 0 if row else 0,
         skip_count=v_skip,
         pass_rate=round(v_pass / evaluable, 4) if evaluable > 0 else 0.0,
     )
 
 
 async def compute_validation_by_category(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     model: Optional[str] = None,
 ) -> list[CategoryValidation]:
@@ -369,8 +360,7 @@ async def compute_validation_by_category(
         GROUP BY p.category
         ORDER BY p.category
     """
-    async with db.execute(q, params) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall(q, tuple(params))
 
     return [
         CategoryValidation(
@@ -386,7 +376,7 @@ async def compute_validation_by_category(
 
 
 async def compute_validation_by_model(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
 ) -> list[ModelValidation]:
     where, params = _build_where(device, None, None, None, None)
@@ -404,8 +394,7 @@ async def compute_validation_by_model(
         GROUP BY m.model_name
         ORDER BY m.model_name
     """
-    async with db.execute(q, params) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall(q, tuple(params))
 
     results = []
     for row in rows:
@@ -453,7 +442,7 @@ from schemas import (
 
 
 async def compute_quant_diff(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     base_model: Optional[str] = None,
 ) -> list[QuantDiffItem]:
@@ -483,8 +472,7 @@ async def compute_quant_diff(
         {where}
         ORDER BY p.prompt_id, m.model_name
     """
-    async with db.execute(q, params) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall(q, tuple(params))
 
     # Group by (prompt_id, base_model)
     groups: dict[tuple[str, str], list] = {}
@@ -605,7 +593,7 @@ def _compute_delta(q: QuantComparisonItem, baseline: QuantComparisonItem) -> Qua
 
 
 async def compute_quant_comparison(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     base_model: Optional[str] = None,
     run_id: Optional[str] = None,
@@ -628,8 +616,7 @@ async def compute_quant_comparison(
     where = "WHERE " + " AND ".join(where_parts)
     sql = f"{_QUANT_AGG_BASE} {where} GROUP BY m.model_name"
 
-    async with db.execute(sql, params) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall(sql, tuple(params))
 
     # Tag with base_name and quant_level
     tagged = []
@@ -670,7 +657,7 @@ async def compute_quant_comparison(
 
 
 async def compute_quant_similarity(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     base_model: Optional[str] = None,
 ) -> QuantSimilarityResponse:

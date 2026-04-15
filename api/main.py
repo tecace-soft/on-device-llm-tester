@@ -8,12 +8,12 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../.env"))
 
-import aiosqlite
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from db import lifespan
+from db_adapter import DbAdapter
 from loader import list_categories, list_devices, list_engines, list_models, list_runs, load_all
 
 from schemas import (
@@ -104,16 +104,29 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _db(request: Request) -> aiosqlite.Connection:
-    return request.app.state.db
+def _db(request: Request) -> DbAdapter:
+    return DbAdapter(request.app.state.db, request.app.state.db_mode)
 
 
 # ── /health ───────────────────────────────────────────────────────────────────
 
 
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health(request: Request):
+    """Render health check + DB 연결 상태 확인.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §7.4
+    Used by: Render health check, UptimeRobot 모니터링
+    """
+    adapter = _db(request)
+    try:
+        await adapter.fetchone("SELECT 1")
+        return {"status": "ok", "db_mode": request.app.state.db_mode}
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": str(e)},
+        )
 
 
 # ── /api/results ──────────────────────────────────────────────────────────────
@@ -254,7 +267,7 @@ async def get_runs(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    db = _db(request)
+    adapter = _db(request)
 
     clauses: list[str] = []
     params: list = []
@@ -263,9 +276,8 @@ async def get_runs(
         params.append(status)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
-    async with db.execute(f"SELECT COUNT(*) FROM runs r {where}", params) as cur:
-        row = await cur.fetchone()
-        total = row[0] if row else 0
+    row = await adapter.fetchone(f"SELECT COUNT(*) FROM runs r {where}", tuple(params))
+    total = row[0] if row else 0
 
     query = f"""
         SELECT
@@ -279,8 +291,7 @@ async def get_runs(
         ORDER BY r.id DESC
         LIMIT ? OFFSET ?
     """
-    async with db.execute(query, params + [limit, offset]) as cur:
-        rows = await cur.fetchall()
+    rows = await adapter.fetchall(query, tuple(params + [limit, offset]))
 
     items = [
         RunItem(
@@ -306,8 +317,8 @@ async def get_runs(
 
 @app.get("/api/runs/{run_id}", response_model=ApiSuccess[RunItem])
 async def get_run(request: Request, run_id: str):
-    db = _db(request)
-    async with db.execute(
+    adapter = _db(request)
+    row = await adapter.fetchone(
         """
         SELECT
             r.id, r.run_id, r.trigger, r.commit_sha, r.branch,
@@ -319,8 +330,7 @@ async def get_run(request: Request, run_id: str):
         GROUP BY r.id
     """,
         (run_id,),
-    ) as cur:
-        row = await cur.fetchone()
+    )
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
@@ -342,14 +352,13 @@ async def get_run(request: Request, run_id: str):
 
 @app.get("/api/runs/{run_id}/summary", response_model=ApiSuccess[SummaryStats])
 async def get_run_summary(request: Request, run_id: str):
-    db = _db(request)
+    adapter = _db(request)
 
-    async with db.execute("SELECT id FROM runs WHERE run_id = ?", (run_id,)) as cur:
-        row = await cur.fetchone()
+    row = await adapter.fetchone("SELECT id FROM runs WHERE run_id = ?", (run_id,))
     if not row:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
-    stats = await compute_summary(_db(request), run_id=run_id)
+    stats = await compute_summary(adapter, run_id=run_id)
     return ApiSuccess(data=stats)
 
 

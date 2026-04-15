@@ -3,8 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-import aiosqlite
-
+from db_adapter import DbAdapter, Row
 from schemas import DeviceInfo, Metrics, ResourceProfile, ResultItem
 
 logger = logging.getLogger(__name__)
@@ -112,7 +111,7 @@ def _safe_delta(a: Optional[int], b: Optional[int]) -> Optional[int]:
     return None
 
 
-def _build_resource_profile(row: aiosqlite.Row) -> Optional[ResourceProfile]:
+def _build_resource_profile(row: Row) -> Optional[ResourceProfile]:
     """Phase 6: DB row에서 ResourceProfile 빌드. 프로파일링 데이터 없으면 None."""
     bls = row["battery_level_start"]
     ble = row["battery_level_end"]
@@ -149,7 +148,7 @@ def _build_resource_profile(row: aiosqlite.Row) -> Optional[ResourceProfile]:
     )
 
 
-def _row_to_item(row: aiosqlite.Row) -> ResultItem:
+def _row_to_item(row: Row) -> ResultItem:
     has_metrics = row["status"] == "success" and row["ttft_ms"] is not None
     metrics = (
         Metrics(
@@ -204,7 +203,7 @@ def _row_to_item(row: aiosqlite.Row) -> ResultItem:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 async def load_all(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
     model: Optional[str] = None,
     category: Optional[str] = None,
@@ -225,25 +224,22 @@ async def load_all(
         LEFT JOIN runs ru ON r.run_id  = ru.id
         {where}
     """
-    async with db.execute(count_query, params) as cur:
-        row = await cur.fetchone()
-        total = row[0] if row else 0
+    row = await db.fetchone(count_query, tuple(params))
+    total = row[0] if row else 0
 
     data_query = f"{_SELECT} {where} ORDER BY r.timestamp DESC LIMIT ? OFFSET ?"
-    async with db.execute(data_query, params + [limit, offset]) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall(data_query, tuple(params + [limit, offset]))
 
     return [_row_to_item(r) for r in rows], total
 
 
-async def list_devices(db: aiosqlite.Connection) -> list[str]:
-    async with db.execute("SELECT DISTINCT model FROM devices ORDER BY model") as cur:
-        rows = await cur.fetchall()
+async def list_devices(db: DbAdapter) -> list[str]:
+    rows = await db.fetchall("SELECT DISTINCT model FROM devices ORDER BY model")
     return [r[0] for r in rows if r[0]]
 
 
 async def list_models(
-    db: aiosqlite.Connection,
+    db: DbAdapter,
     device: Optional[str] = None,
 ) -> list[str]:
     if device:
@@ -260,32 +256,26 @@ async def list_models(
         query = "SELECT DISTINCT model_name FROM models ORDER BY model_name"
         params = ()
 
-    async with db.execute(query, params) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall(query, params)
     return [r[0] for r in rows if r[0]]
 
 
-async def list_categories(db: aiosqlite.Connection) -> list[str]:
-    async with db.execute(
+async def list_categories(db: DbAdapter) -> list[str]:
+    rows = await db.fetchall(
         "SELECT DISTINCT category FROM prompts WHERE category != '' ORDER BY category"
-    ) as cur:
-        rows = await cur.fetchall()
+    )
     return [r[0] for r in rows if r[0]]
 
 
-async def list_runs(db: aiosqlite.Connection) -> list[str]:
+async def list_runs(db: DbAdapter) -> list[str]:
     """Return distinct run_ids ordered by most recent first."""
-    async with db.execute(
-        "SELECT run_id FROM runs ORDER BY id DESC"
-    ) as cur:
-        rows = await cur.fetchall()
+    rows = await db.fetchall("SELECT run_id FROM runs ORDER BY id DESC")
     return [r[0] for r in rows if r[0]]
 
 
-async def list_engines(db: aiosqlite.Connection) -> list[str]:
+async def list_engines(db: DbAdapter) -> list[str]:
     """Return distinct engine values from models table."""
-    async with db.execute(
+    rows = await db.fetchall(
         "SELECT DISTINCT engine FROM models WHERE engine != '' ORDER BY engine"
-    ) as cur:
-        rows = await cur.fetchall()
+    )
     return [r[0] for r in rows if r[0]]
