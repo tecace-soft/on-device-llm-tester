@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from cache import invalidate_cache
 from db import lifespan
 from db_adapter import DbAdapter
 from loader import list_categories, list_devices, list_engines, list_models, list_runs, load_all
@@ -127,6 +128,21 @@ async def health(request: Request):
             status_code=503,
             content={"status": "error", "detail": str(e)},
         )
+
+
+# ── /api/cache ────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/cache/invalidate")
+async def cache_invalidate():
+    """집계 쿼리 캐시 전체 무효화.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §8.4
+    Used by: CI ingest 완료 후 수동 호출, 관리용
+    Note: /api/* 경로이므로 API_KEY 설정 시 auth_middleware가 자동 보호.
+    """
+    cleared = invalidate_cache()
+    return {"status": "ok", "cleared": cleared}
 
 
 # ── /api/results ──────────────────────────────────────────────────────────────

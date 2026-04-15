@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from cache import cached_query
 from db_adapter import DbAdapter, Row
 from schemas import (
     CategorySummary,
@@ -185,6 +186,7 @@ async def _build_summary(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+@cached_query()
 async def compute_summary(
     db: DbAdapter,
     device: Optional[str] = None,
@@ -198,6 +200,7 @@ async def compute_summary(
     return await _build_summary(db, where, params)
 
 
+@cached_query()
 async def compute_by_model(
     db: DbAdapter,
     device: Optional[str] = None,
@@ -217,6 +220,7 @@ async def compute_by_model(
     return results
 
 
+@cached_query()
 async def compute_by_category(
     db: DbAdapter,
     device: Optional[str] = None,
