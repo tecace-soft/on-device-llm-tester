@@ -1,12 +1,21 @@
 """
-ingest.py — JSON → SQLite 적재 스크립트 (Phase 2 CI/CD 확장)
+ingest.py — JSON → SQLite/Turso 적재 스크립트 (Phase 7 Cloud Deployment)
+
+Architecture: DEPLOYMENT_ARCHITECTURE.md §5
 
 Usage:
-    # 기존 (하위 호환)
+    # 기존 (하위 호환 — 로컬 SQLite)
     python scripts/ingest.py
 
-    # Phase 2 CI 실행 시
+    # Phase 2 CI 실행 시 (로컬 SQLite)
     python scripts/ingest.py \
+        --run-id 12345678 \
+        --trigger manual \
+        --commit-sha abc123def \
+        --branch main
+
+    # Phase 7: Turso 클라우드 적재
+    DB_MODE=turso python scripts/ingest.py \
         --run-id 12345678 \
         --trigger manual \
         --commit-sha abc123def \
@@ -23,7 +32,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -41,6 +50,12 @@ CONFIG_PATH = Path(os.getenv("CONFIG_PATH", str(_PROJECT_ROOT / "test_config.jso
 
 # Phase 6: profile JSON 매칭 시 허용하는 타임스탬프 차이 (ms)
 _PROFILE_MATCH_WINDOW_MS = 5000
+
+# Phase 7: Turso Batch INSERT 크기 (DEPLOYMENT_ARCHITECTURE.md §5.2)
+BATCH_SIZE = 100
+
+# Phase 7: DB 모드 — "local" (기존 SQLite) | "turso" (클라우드)
+DB_MODE = os.getenv("DB_MODE", "local")
 
 
 # ── Shared DDL (single source of truth) ───────────────────────────────────────
@@ -148,7 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_results_filter    ON results(device_id, model_id,
 """
 
 
-# ── DB helpers ────────────────────────────────────────────────────────────────
+# ── DB helpers (LOCAL — 기존 코드 보존) ───────────────────────────────────────
 
 def get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +227,7 @@ def init_tables(con: sqlite3.Connection) -> None:
     con.commit()
 
 
-# ── Dimension upserts ─────────────────────────────────────────────────────────
+# ── Dimension upserts (LOCAL) ─────────────────────────────────────────────────
 
 def upsert_device(con: sqlite3.Connection, manufacturer: str, model: str, product: str,
                   soc: str, android_version: str, sdk_int: int,
@@ -311,7 +326,7 @@ def sync_ground_truth(con: sqlite3.Connection, config_path: Path) -> int:
     return updated
 
 
-# ── runs table ────────────────────────────────────────────────────────────────
+# ── runs table (LOCAL) ────────────────────────────────────────────────────────
 
 def create_run(con: sqlite3.Connection, run_id: str, trigger: str,
                commit_sha: Optional[str], branch: Optional[str]) -> int:
@@ -334,7 +349,7 @@ def finalize_run(con: sqlite3.Connection, run_pk: int, status: str) -> None:
 
 # ── JSON parsing ──────────────────────────────────────────────────────────────
 
-def _float(v: object) -> Optional[float]:
+def _float(v: Any) -> Optional[float]:
     if v is None:
         return None
     try:
@@ -343,7 +358,7 @@ def _float(v: object) -> Optional[float]:
         return None
 
 
-def _int(v: object) -> Optional[int]:
+def _int(v: Any) -> Optional[int]:
     if v is None:
         return None
     try:
@@ -481,7 +496,7 @@ def _has_profiling(profile_data: dict) -> bool:
     return False
 
 
-# ── Core ingest ───────────────────────────────────────────────────────────────
+# ── Core ingest (LOCAL — 기존 코드 보존) ──────────────────────────────────────
 # FIX(P2): Previous version used con.rollback() inside the per-record loop,
 # which rolled back ALL previously inserted records in the same transaction.
 # Now we use autocommit=False and commit in batches. Individual INSERT OR IGNORE
@@ -566,7 +581,384 @@ def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, in
     return inserted, skipped, errors
 
 
-# ── Summary-only mode ─────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 7: TURSO MODE — Dual-mode Batch INSERT
+# Architecture: DEPLOYMENT_ARCHITECTURE.md §5
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_turso_client():
+    """Create a synchronous Turso client.
+
+    Used by: main() when DB_MODE=turso
+    Depends on: libsql_client (pip install libsql-client)
+    """
+    import libsql_client
+
+    url = os.getenv("TURSO_URL")
+    token = os.getenv("TURSO_AUTH_TOKEN")
+    if not url or not token:
+        logger.error("TURSO_URL and TURSO_AUTH_TOKEN must be set when DB_MODE=turso")
+        sys.exit(1)
+
+    return libsql_client.create_client_sync(url=url, auth_token=token)
+
+
+def init_tables_turso(client) -> None:
+    """Execute DDL on Turso via batch. Turso manages WAL/FK internally.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5.3
+    Used by: main() turso branch
+    """
+    import libsql_client
+
+    statements = [s.strip() for s in _DDL.split(";") if s.strip()]
+    batch = [libsql_client.Statement(s) for s in statements]
+    client.batch(batch)
+    logger.info("Turso: DDL init complete (%d statements)", len(batch))
+
+
+def create_run_turso(client, run_id: str, trigger: str,
+                     commit_sha: Optional[str], branch: Optional[str]) -> int:
+    """Insert a run record and return its PK.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5.3
+    Used by: main() turso branch
+    """
+    import libsql_client
+
+    client.batch([
+        libsql_client.Statement(
+            "INSERT OR IGNORE INTO runs (run_id, trigger, commit_sha, branch, started_at, status) "
+            "VALUES (?, ?, ?, ?, datetime('now'), 'running')",
+            [run_id, trigger, commit_sha, branch],
+        ),
+    ])
+    rs = client.execute("SELECT id FROM runs WHERE run_id=?", [run_id])
+    return rs.rows[0][0]
+
+
+def finalize_run_turso(client, run_pk: int, status: str) -> None:
+    """Update run status to success/error.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5.3
+    """
+    import libsql_client
+
+    client.execute(
+        "UPDATE runs SET finished_at = datetime('now'), status = ? WHERE id = ?",
+        [status, run_pk],
+    )
+
+
+def _build_dimension_stmts(rec: dict) -> list:
+    """Build libsql_client.Statement list for dimension upserts (device, model, prompt).
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5.2
+    Used by: ingest_turso()
+    """
+    import libsql_client
+
+    return [
+        libsql_client.Statement(
+            "INSERT OR IGNORE INTO devices "
+            "(manufacturer, model, product, soc, android_version, sdk_int, cpu_cores, max_heap_mb) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [rec["manufacturer"], rec["device_model"], rec["product"],
+             rec["soc"], rec["android_version"], rec["sdk_int"],
+             rec["cpu_cores"], rec["max_heap_mb"]],
+        ),
+        libsql_client.Statement(
+            "INSERT OR IGNORE INTO models (model_name, model_path, backend, engine) "
+            "VALUES (?, ?, ?, ?)",
+            [rec["model_name"], rec["model_path"], rec["backend"], rec["engine"]],
+        ),
+        libsql_client.Statement(
+            "INSERT OR IGNORE INTO prompts (prompt_id, category, lang, prompt_text) "
+            "VALUES (?, ?, ?, ?)",
+            [rec["prompt_id"], rec["category"], rec["lang"], rec["prompt_text"]],
+        ),
+    ]
+
+
+def _build_result_insert_stmt(rec: dict, run_pk: Optional[int]):
+    """Build a single libsql_client.Statement for results INSERT.
+
+    Why subqueries: Turso batch executes in a single HTTP round-trip.
+    Dimension PKs are resolved via inline subqueries instead of separate SELECT calls,
+    eliminating extra network round-trips per record.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5.2
+    Used by: ingest_turso()
+    """
+    import libsql_client
+
+    return libsql_client.Statement(
+        """
+        INSERT OR IGNORE INTO results (
+            device_id, model_id, prompt_id, run_id,
+            status, latency_ms, init_time_ms, response, error,
+            ttft_ms, prefill_time_ms, decode_time_ms,
+            input_token_count, output_token_count,
+            prefill_tps, decode_tps,
+            peak_java_memory_mb, peak_native_memory_mb,
+            itl_p50_ms, itl_p95_ms, itl_p99_ms,
+            battery_level_start, battery_level_end,
+            thermal_start, thermal_end,
+            voltage_start_mv, voltage_end_mv,
+            current_before_ua, current_after_ua,
+            system_pss_mb, profiling_error,
+            timestamp
+        ) VALUES (
+            (SELECT id FROM devices WHERE manufacturer=? AND model=? AND product=?),
+            (SELECT id FROM models WHERE model_name=? AND model_path=? AND backend=? AND engine=?),
+            (SELECT id FROM prompts WHERE prompt_id=?),
+            ?,
+            ?, ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?,
+            ?
+        )
+        """,
+        [
+            # device subquery params
+            rec["manufacturer"], rec["device_model"], rec["product"],
+            # model subquery params
+            rec["model_name"], rec["model_path"], rec["backend"], rec["engine"],
+            # prompt subquery param
+            rec["prompt_id"],
+            # run_id
+            run_pk,
+            # result fields
+            rec["status"], rec["latency_ms"], rec["init_time_ms"],
+            rec["response"], rec["error"],
+            rec["ttft_ms"], rec["prefill_time_ms"], rec["decode_time_ms"],
+            rec["input_token_count"], rec["output_token_count"],
+            rec["prefill_tps"], rec["decode_tps"],
+            rec["peak_java_memory_mb"], rec["peak_native_memory_mb"],
+            rec["itl_p50_ms"], rec["itl_p95_ms"], rec["itl_p99_ms"],
+            rec["battery_level_start"], rec["battery_level_end"],
+            rec["thermal_start"], rec["thermal_end"],
+            rec["voltage_start_mv"], rec["voltage_end_mv"],
+            rec["current_before_ua"], rec["current_after_ua"],
+            rec["system_pss_mb"], rec["profiling_error"],
+            rec["timestamp"],
+        ],
+    )
+
+
+def ingest_turso(client, run_pk: Optional[int]) -> tuple[int, int, int]:
+    """Turso용 Batch INSERT 적재.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5
+    Used by: main() (CLI entry point)
+    Depends on: parse_result_file(), _build_dimension_stmts(), _build_result_insert_stmt()
+    """
+    import libsql_client
+
+    inserted = skipped = errors = 0
+
+    json_files = sorted(RESULTS_DIR.rglob("*.json"))
+    if not json_files:
+        logger.warning("No JSON files found in %s", RESULTS_DIR)
+        return inserted, skipped, errors
+
+    # Phase 1: Parse all files and collect valid records
+    records = []
+    for path in json_files:
+        rec = parse_result_file(path)
+        if rec is None:
+            if path.name.startswith("profile_"):
+                skipped += 1
+            else:
+                errors += 1
+            continue
+        records.append(rec)
+
+    if not records:
+        return inserted, skipped, errors
+
+    # Phase 2: Dimension upserts — deduplicate before batching
+    seen_devices = set()
+    seen_models = set()
+    seen_prompts = set()
+    dim_stmts = []
+
+    for rec in records:
+        dev_key = (rec["manufacturer"], rec["device_model"], rec["product"])
+        if dev_key not in seen_devices:
+            seen_devices.add(dev_key)
+            dim_stmts.append(libsql_client.Statement(
+                "INSERT OR IGNORE INTO devices "
+                "(manufacturer, model, product, soc, android_version, sdk_int, cpu_cores, max_heap_mb) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [rec["manufacturer"], rec["device_model"], rec["product"],
+                 rec["soc"], rec["android_version"], rec["sdk_int"],
+                 rec["cpu_cores"], rec["max_heap_mb"]],
+            ))
+
+        mod_key = (rec["model_name"], rec["model_path"], rec["backend"], rec["engine"])
+        if mod_key not in seen_models:
+            seen_models.add(mod_key)
+            dim_stmts.append(libsql_client.Statement(
+                "INSERT OR IGNORE INTO models (model_name, model_path, backend, engine) "
+                "VALUES (?, ?, ?, ?)",
+                [rec["model_name"], rec["model_path"], rec["backend"], rec["engine"]],
+            ))
+
+        prm_key = rec["prompt_id"]
+        if prm_key not in seen_prompts:
+            seen_prompts.add(prm_key)
+            dim_stmts.append(libsql_client.Statement(
+                "INSERT OR IGNORE INTO prompts (prompt_id, category, lang, prompt_text) "
+                "VALUES (?, ?, ?, ?)",
+                [rec["prompt_id"], rec["category"], rec["lang"], rec["prompt_text"]],
+            ))
+
+    if dim_stmts:
+        # Dimension upserts are few — single batch is fine
+        for i in range(0, len(dim_stmts), BATCH_SIZE):
+            batch = dim_stmts[i:i + BATCH_SIZE]
+            client.batch(batch)
+        logger.info("Turso: %d dimension upserts sent (%d devices, %d models, %d prompts)",
+                     len(dim_stmts), len(seen_devices), len(seen_models), len(seen_prompts))
+
+    # Phase 3: Results INSERT — batch by BATCH_SIZE
+    result_stmts = [_build_result_insert_stmt(rec, run_pk) for rec in records]
+
+    for i in range(0, len(result_stmts), BATCH_SIZE):
+        batch = result_stmts[i:i + BATCH_SIZE]
+        try:
+            results = client.batch(batch)
+            batch_inserted = sum(1 for r in results if r.rows_affected > 0)
+            batch_skipped = sum(1 for r in results if r.rows_affected == 0)
+            inserted += batch_inserted
+            skipped += batch_skipped
+            logger.info("Turso: batch %d-%d → %d inserted, %d skipped",
+                        i, i + len(batch), batch_inserted, batch_skipped)
+        except Exception as e:
+            logger.error("Turso: batch %d-%d failed: %s", i, i + len(batch), e)
+            errors += len(batch)
+
+    return inserted, skipped, errors
+
+
+def sync_ground_truth_turso(client, config_path: Path) -> int:
+    """Phase 4a: ground_truth sync for Turso mode.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5
+    """
+    import libsql_client
+
+    prompt_map = _load_config_prompt_map(config_path)
+    if not prompt_map:
+        return 0
+
+    stmts = []
+    for prompt_id, vals in prompt_map.items():
+        ground_truth = vals["ground_truth"]
+        eval_strategy = vals["eval_strategy"]
+
+        valid_strategies = {"deterministic", "deterministic_with_fallback", "structural", "none"}
+        if eval_strategy not in valid_strategies:
+            logger.warning("Unknown eval_strategy '%s' for prompt '%s' — falling back to 'none'",
+                           eval_strategy, prompt_id)
+            eval_strategy = "none"
+
+        stmts.append(libsql_client.Statement(
+            "UPDATE prompts SET ground_truth = ?, eval_strategy = ? WHERE prompt_id = ?",
+            [ground_truth, eval_strategy, prompt_id],
+        ))
+
+    if stmts:
+        results = client.batch(stmts)
+        updated = sum(1 for r in results if r.rows_affected > 0)
+        logger.info("Turso: ground truth synced — %d prompts updated from %s", updated, config_path)
+        return updated
+    return 0
+
+
+def print_summary_turso(client) -> None:
+    """Print DB summary stats from Turso.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §5
+    """
+    rs = client.execute("""
+        SELECT
+            COUNT(*)                                    AS total,
+            SUM(CASE WHEN status='success' THEN 1 END) AS success,
+            SUM(CASE WHEN status='error'   THEN 1 END) AS errors
+        FROM results
+    """)
+    row = rs.rows[0] if rs.rows else (0, 0, 0)
+    total   = row[0] or 0
+    success = row[1] or 0
+    errs    = row[2] or 0
+
+    run_rs = client.execute("""
+        SELECT run_id, trigger, branch, started_at, status
+        FROM runs ORDER BY id DESC LIMIT 1
+    """)
+
+    print(f"Total results in DB : {total}")
+    print(f"  success           : {success}")
+    print(f"  error             : {errs}")
+    if run_rs.rows:
+        r = run_rs.rows[0]
+        print(f"Latest run          : {r[0]} ({r[1]}) "
+              f"branch={r[2]} started={r[3]} status={r[4]}")
+
+    # Phase 4a: validation summary
+    val_rs = client.execute("""
+        SELECT
+            COUNT(validation_status)                                        AS validated,
+            SUM(CASE WHEN validation_status='pass'      THEN 1 ELSE 0 END) AS v_pass,
+            SUM(CASE WHEN validation_status='fail'      THEN 1 ELSE 0 END) AS v_fail,
+            SUM(CASE WHEN validation_status='warn'      THEN 1 ELSE 0 END) AS v_warn,
+            SUM(CASE WHEN validation_status='uncertain' THEN 1 ELSE 0 END) AS v_uncertain,
+            SUM(CASE WHEN validation_status='skip'      THEN 1 ELSE 0 END) AS v_skip
+        FROM results
+    """)
+    val_row = val_rs.rows[0] if val_rs.rows else (0, 0, 0, 0, 0, 0)
+    validated = val_row[0] or 0
+    if validated > 0:
+        print(f"Validation          : {validated} validated "
+              f"(pass={val_row[1]}, fail={val_row[2]}, warn={val_row[3]}, "
+              f"uncertain={val_row[4]}, skip={val_row[5]})")
+
+    # Phase 6: resource profiling summary
+    prof_rs = client.execute("""
+        SELECT
+            COUNT(battery_level_start) AS profiled,
+            AVG(thermal_end - thermal_start) AS avg_thermal_delta,
+            AVG(voltage_end_mv - voltage_start_mv) AS avg_voltage_delta,
+            AVG(system_pss_mb) AS avg_pss,
+            COUNT(profiling_error) AS prof_errors
+        FROM results
+        WHERE battery_level_start IS NOT NULL
+    """)
+    prof_row = prof_rs.rows[0] if prof_rs.rows else (0, 0, 0, 0, 0)
+    profiled = prof_row[0] or 0
+    if profiled > 0:
+        avg_td = prof_row[1] or 0
+        avg_vd = prof_row[2] or 0
+        avg_pss = prof_row[3] or 0
+        prof_errs = prof_row[4] or 0
+        print(f"Resource profiling  : {profiled} profiled "
+              f"(avg_thermal_delta={avg_td / 10:+.1f}°C, "
+              f"avg_voltage_delta={avg_vd:+.0f}mV, "
+              f"avg_pss={avg_pss:.0f}MB, "
+              f"errors={prof_errs})")
+
+
+# ── Summary-only mode (LOCAL — 기존 코드 보존) ────────────────────────────────
 
 def print_summary(con: sqlite3.Connection) -> None:
     row = con.execute("""
@@ -636,7 +1028,7 @@ def print_summary(con: sqlite3.Connection) -> None:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Ingest JSON results into SQLite DB")
+    p = argparse.ArgumentParser(description="Ingest JSON results into SQLite/Turso DB")
     p.add_argument("--results-dir", default=None)
     p.add_argument("--db-path", default=None)
     p.add_argument("--config-path", default=None,
@@ -645,7 +1037,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--trigger", default="manual")
     p.add_argument("--commit-sha", default=None)
     p.add_argument("--branch", default=None)
-    p.add_argument("--summary-only", action="store_true")
+    p.add_argument("--summary-only", action="store_true",
+                   help="Print DB stats and exit (no ingest)")
     return p
 
 
@@ -661,47 +1054,92 @@ def main() -> None:
 
     config_path = Path(args.config_path) if args.config_path else CONFIG_PATH
 
-    con = get_connection()
-    init_tables(con)
+    # ── Phase 7: Dual-mode branch ────────────────────────────────────────
+    if DB_MODE == "turso":
+        client = _get_turso_client()
+        init_tables_turso(client)
 
-    if args.summary_only:
-        print_summary(con)
-        con.close()
-        return
+        if args.summary_only:
+            print_summary_turso(client)
+            client.close()
+            return
 
-    run_pk: Optional[int] = None
-    if args.run_id:
-        run_pk = create_run(con, args.run_id, args.trigger, args.commit_sha, args.branch)
-        logger.info("Run started  run_id=%s trigger=%s branch=%s commit=%s",
-                     args.run_id, args.trigger, args.branch, args.commit_sha)
+        run_pk: Optional[int] = None
+        if args.run_id:
+            run_pk = create_run_turso(client, args.run_id, args.trigger,
+                                      args.commit_sha, args.branch)
+            logger.info("Turso: run started  run_id=%s trigger=%s branch=%s commit=%s",
+                        args.run_id, args.trigger, args.branch, args.commit_sha)
 
-    try:
-        inserted, skipped, errors = ingest(con, run_pk)
-    except Exception as e:
+        try:
+            inserted, skipped, errors = ingest_turso(client, run_pk)
+        except Exception as e:
+            if run_pk is not None:
+                finalize_run_turso(client, run_pk, "error")
+            client.close()
+            logger.fatal("Turso ingest failed: %s", e)
+            sys.exit(1)
+
+        gt_updated = sync_ground_truth_turso(client, config_path)
+
         if run_pk is not None:
-            finalize_run(con, run_pk, "error")
+            if inserted == 0 and errors == 0 and skipped == 0:
+                status = "error"
+            elif errors and not inserted:
+                status = "error"
+            else:
+                status = "success"
+            finalize_run_turso(client, run_pk, status)
+            logger.info("Turso: run finished run_id=%s status=%s", args.run_id, status)
+
+        print(f"\nIngest complete (turso) — inserted: {inserted}, skipped: {skipped}, errors: {errors}")
+        if gt_updated:
+            print(f"Ground truth synced: {gt_updated} prompts")
+        client.close()
+
+    else:
+        # ── 기존 로컬 SQLite 경로 (변경 없음) ────────────────────────────
+        con = get_connection()
+        init_tables(con)
+
+        if args.summary_only:
+            print_summary(con)
+            con.close()
+            return
+
+        run_pk: Optional[int] = None
+        if args.run_id:
+            run_pk = create_run(con, args.run_id, args.trigger, args.commit_sha, args.branch)
+            logger.info("Run started  run_id=%s trigger=%s branch=%s commit=%s",
+                        args.run_id, args.trigger, args.branch, args.commit_sha)
+
+        try:
+            inserted, skipped, errors = ingest(con, run_pk)
+        except Exception as e:
+            if run_pk is not None:
+                finalize_run(con, run_pk, "error")
+            con.close()
+            logger.fatal("Ingest failed: %s", e)
+            sys.exit(1)
+
+        # Phase 4a: sync ground_truth + eval_strategy from test_config.json
+        gt_updated = sync_ground_truth(con, config_path)
+
+        if run_pk is not None:
+            # FIX(H): Mark as error if nothing was inserted (phantom run prevention)
+            if inserted == 0 and errors == 0 and skipped == 0:
+                status = "error"
+            elif errors and not inserted:
+                status = "error"
+            else:
+                status = "success"
+            finalize_run(con, run_pk, status)
+            logger.info("Run finished run_id=%s status=%s", args.run_id, status)
+
+        print(f"\nIngest complete — inserted: {inserted}, skipped: {skipped}, errors: {errors}")
+        if gt_updated:
+            print(f"Ground truth synced: {gt_updated} prompts")
         con.close()
-        logger.fatal("Ingest failed: %s", e)
-        sys.exit(1)
-
-    # Phase 4a: sync ground_truth + eval_strategy from test_config.json
-    gt_updated = sync_ground_truth(con, config_path)
-
-    if run_pk is not None:
-        # FIX(H): Mark as error if nothing was inserted (phantom run prevention)
-        if inserted == 0 and errors == 0 and skipped == 0:
-            status = "error"
-        elif errors and not inserted:
-            status = "error"
-        else:
-            status = "success"
-        finalize_run(con, run_pk, status)
-        logger.info("Run finished run_id=%s status=%s", args.run_id, status)
-
-    print(f"\nIngest complete — inserted: {inserted}, skipped: {skipped}, errors: {errors}")
-    if gt_updated:
-        print(f"Ground truth synced: {gt_updated} prompts")
-    con.close()
 
 
 if __name__ == "__main__":

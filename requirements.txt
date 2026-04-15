@@ -1,5 +1,8 @@
-python-dotenv     # 설정값(.env) 관리
-huggingface_hub   # 모델 다운로드
-pandas
-openpyxl
-pytest
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+python-dotenv
+aiosqlite>=0.20.0
+ 
+# Phase 7: Turso Cloud DB (DEPLOYMENT_ARCHITECTURE.md §5)
+libsql-client>=0.3.0

@@ -44,4 +44,5 @@ package-lock.json
 Thumbs.db
 .vscode/
 *.swp
-*.swo
+*.swo.env.local
+.env.production
