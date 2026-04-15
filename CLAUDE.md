@@ -101,9 +101,14 @@ cd api && python -m pytest tests/ -v
 Phase 7 Cloud Deployment 구현 중. 진행 상황:
 - ✅ Step 1: Turso 셋업 완료
 - ✅ Step 2: `scripts/ingest.py` Turso dual-mode + batch INSERT 완료
-- 🔲 Step 3: `api/db.py` dual-mode lifespan + `api/db_adapter.py` 신규
-- 🔲 Step 4: `api/cache.py` TTLCache
-- 🔲 Step 5: Render 배포 (`render.yaml`, 정적 파일 서빙)
+- ✅ Step 3: `api/db.py` dual-mode lifespan + `api/db_adapter.py` 신규
+- ✅ Step 4: `api/cache.py` TTLCache
+- ✅ Step 5: **Vercel + Render + Turso** 배포 구성 완료
+  - Architecture change: Render 단독 → Vercel (frontend) + Render (API only)
+  - `dashboard/vercel.json`, `dashboard/.env.production`, `render.yaml` 신규
+  - `dashboard/src/api/client.ts` — `VITE_API_URL` 기반 baseURL
+  - `DEPLOYMENT_ARCHITECTURE.md` §7 업데이트 (Vercel+Render primary)
 - 🔲 Step 6: 통합 테스트 + README 업데이트
 
+Deployment stack: **Vercel** (React UI) + **Render** (FastAPI) + **Turso** (libSQL DB)
 See `DEPLOYMENT_ARCHITECTURE.md` for full plan.

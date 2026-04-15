@@ -1,0 +1,22 @@
+# Render Blueprint — FastAPI backend only (frontend served via Vercel)
+# Architecture: DEPLOYMENT_ARCHITECTURE.md
+services:
+  - type: web
+    name: llm-tester-api
+    runtime: python
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DB_MODE
+        value: turso
+      - key: TURSO_URL
+        fromSecret: TURSO_URL
+      - key: TURSO_AUTH_TOKEN
+        fromSecret: TURSO_AUTH_TOKEN
+      - key: ALLOWED_ORIGINS
+        fromSecret: ALLOWED_ORIGINS   # e.g. https://llm-tester.vercel.app,http://localhost:5173
+      - key: PYTHON_VERSION
+        value: "3.11"
+    plan: free
+    autoDeploy: true
+    branch: main

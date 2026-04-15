@@ -2,49 +2,62 @@
 
 ## 1. High-Level Overview
 
+> **Architecture change (Step 5):** Switched from Render single-deploy to
+> **Vercel (frontend) + Render (API) + Turso (DB)** split.
+> Original §18.2 "future option" is now the primary deployment plan.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                    CLOUD DEPLOYMENT (Phase 7)                                │
 │                                                                              │
 │  ┌─────────────────────────────────┐                                         │
-│  │  Self-hosted Runner (개발 PC)    │                                         │
+│  │  Self-hosted Runner (dev PC)    │                                         │
 │  │                                  │                                         │
 │  │  runner.py → sync_results.py     │                                         │
 │  │       │                          │                                         │
 │  │       ▼                          │                                         │
-│  │  ingest.py                       │                                         │
-│  │    ├─ JSON 파싱 + 정규화         │                                         │
-│  │    ├─ Turso로 Batch INSERT       │  ← libsql-client (HTTP API)            │
-│  │    └─ runs 테이블 메타데이터     │                                         │
+│  │  ingest.py (DB_MODE=turso)       │                                         │
+│  │    ├─ JSON parse + normalize     │                                         │
+│  │    ├─ Batch INSERT → Turso       │  ← libsql-client (HTTP API)            │
+│  │    └─ runs table metadata        │                                         │
 │  └──────────────┬──────────────────┘                                         │
-│                 │ HTTPS (libsql:// 프로토콜)                                  │
+│                 │ HTTPS (libsql://)                                           │
 │                 ▼                                                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐     │
 │  │  Turso (libSQL Cloud)                                                │     │
 │  │                                                                      │     │
 │  │  libsql://llm-tester-db.turso.io                                     │     │
-│  │  ├─ devices, models, prompts, results, runs 테이블                   │     │
-│  │  ├─ 기존 SQLite 스키마 100% 호환                                     │     │
-│  │  └─ Free Tier: 5GB 스토리지, 500M rows read/월                       │     │
-│  └──────────────────────────┬───────────────────────────────────────────┘     │
-│                             │ HTTPS (libsql:// 프로토콜)                      │
-│                             ▼                                                 │
+│  │  ├─ devices, models, prompts, results, runs                          │     │
+│  │  ├─ 100% SQLite schema compatible                                    │     │
+│  │  └─ Free Tier: 5GB storage, 500M rows read/mo                        │     │
+│  └──────────┬──────────────────────────────────────────────────────────┘     │
+│             │ HTTPS (libsql://)                                              │
+│             ▼                                                                │
 │  ┌──────────────────────────────────────────────────────────────────────┐     │
-│  │  Render (FastAPI + React Static — 단독 배포)                         │     │
+│  │  Render — API only (llm-tester-api.onrender.com)                    │     │
 │  │                                                                      │     │
-│  │  https://llm-tester.onrender.com                                     │     │
-│  │  ├─ FastAPI + Uvicorn                                                │     │
-│  │  │    ├─ /api/* → Turso 읽기 (libsql-client async)                   │     │
-│  │  │    ├─ TTLCache (인메모리 캐시, 집계 쿼리 부하 절감)               │     │
-│  │  │    └─ /* → Vite build 정적 파일 서빙 (SPA fallback)               │     │
-│  │  │                                                                   │     │
-│  │  └─ Free Tier: 750시간/월, 512MB RAM                                 │     │
-│  │     ※ 15분 무활동 시 spin-down → Cold Start 30~60초                  │     │
-│  │     ※ 문제 시 Vercel 프론트 분리로 전환 가능 (§18.2)                 │     │
+│  │  FastAPI + Uvicorn                                                   │     │
+│  │    ├─ /api/* → Turso reads (libsql-client async)                    │     │
+│  │    ├─ TTLCache (in-memory, reduces aggregate query load)            │     │
+│  │    └─ CORS: ALLOWED_ORIGINS includes Vercel domain                  │     │
+│  │                                                                      │     │
+│  │  Free Tier: 750 hrs/mo, 512MB RAM                                   │     │
+│  │  ※ 15 min idle → spin-down → Cold Start 30~60s                      │     │
+│  └──────────────────────────────────────────────────────────────────────┘     │
+│                                           ▲ /api/* (CORS)                    │
+│  ┌──────────────────────────────────────────────────────────────────────┐     │
+│  │  Vercel — Frontend (llm-tester.vercel.app)                          │     │
+│  │                                                                      │     │
+│  │  Vite build (React 18 + TypeScript + Tailwind)                      │     │
+│  │    ├─ VITE_API_URL=https://llm-tester-api.onrender.com              │     │
+│  │    ├─ SPA fallback via vercel.json rewrites                         │     │
+│  │    └─ Instant global CDN — no Cold Start on UI                      │     │
+│  │                                                                      │     │
+│  │  Free Tier: unlimited bandwidth, 100GB/mo                           │     │
 │  └──────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  ※ 로컬 개발 시: Vite dev server (:5173) → FastAPI (:8000) → SQLite 로컬    │
-│  ※ 프로덕션 시: Render (FastAPI + Static) → Turso                            │
+│  Local dev:  Vite dev server (:5173) → proxy → FastAPI (:8000) → SQLite     │
+│  Production: Vercel (UI) + Render (API) + Turso (DB)                        │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -463,47 +476,51 @@ Value: eyJhbGciOiJFZDI1NTE5...
 | 대시보드 데이터 소스 | 로컬 .db 파일 | Turso (실시간) |
 | CI 완료 → 대시보드 반영 | Artifact 다운로드 필요 | 즉시 반영 (Turso 직접 적재) |
 
-## 7. Render 배포 (FastAPI + React Static)
+## 7. Deployment (Vercel + Render + Turso)
 
-### 7.1 정적 파일 서빙 구조
+> **Primary plan** — Vercel hosts the React frontend, Render hosts FastAPI (API only),
+> Turso is the database. Originally §18.2; promoted to primary in Step 5.
 
-FastAPI에서 Vite build output을 직접 서빙한다. 별도 프론트 호스팅 불필요.
+### 7.1 Vercel — Frontend
 
-```python
-# api/main.py — 정적 파일 서빙 추가 (모든 API 라우트 등록 후 마지막에 추가)
-
-from fastapi.responses import FileResponse
-import os
-
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "../dashboard/dist")
-
-# SPA fallback: /api/* 이외의 모든 경로 → index.html
-@app.get("/{full_path:path}")
-async def serve_spa(full_path: str):
-    """React SPA fallback.
-
-    Architecture: DEPLOYMENT_ARCHITECTURE.md §7
-    Used by: 프론트엔드 라우팅 (/performance, /compare 등)
-    """
-    file_path = os.path.join(STATIC_DIR, full_path)
-    if os.path.isfile(file_path):
-        return FileResponse(file_path)
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+```json
+// dashboard/vercel.json
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}
 ```
 
-### 7.2 Build 프로세스
+```
+// dashboard/.env.production
+VITE_API_URL=https://llm-tester-api.onrender.com   // update after first Render deploy
+```
 
-Render에서 배포 시, 프론트엔드를 먼저 빌드하고 백엔드를 기동한다.
+```ts
+// dashboard/src/api/client.ts — baseURL change
+// Empty string in local dev → Vite proxy handles /api/*
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? ''
+const client = axios.create({ baseURL: `${API_BASE_URL}/api`, ... })
+```
+
+Vercel setup:
+1. Import GitHub repo → set Root Directory to `dashboard`
+2. Add env var `VITE_API_URL` (Render API URL)
+3. Auto-deploy on push to `main`
+
+### 7.2 Render — API only
 
 ```yaml
-# render.yaml (Render Blueprint — 리포 루트에 배치)
+# render.yaml
 services:
   - type: web
-    name: llm-tester
+    name: llm-tester-api
     runtime: python
-    buildCommand: |
-      cd dashboard && npm install && npm run build && cd .. &&
-      pip install -r api/requirements.txt
+    buildCommand: pip install -r api/requirements.txt
     startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DB_MODE
@@ -512,78 +529,53 @@ services:
         fromSecret: TURSO_URL
       - key: TURSO_AUTH_TOKEN
         fromSecret: TURSO_AUTH_TOKEN
+      - key: ALLOWED_ORIGINS
+        fromSecret: ALLOWED_ORIGINS   # e.g. https://llm-tester.vercel.app,http://localhost:5173
       - key: PYTHON_VERSION
         value: "3.11"
-      - key: NODE_VERSION
-        value: "20"
     plan: free
     autoDeploy: true
     branch: main
 ```
 
-### 7.3 CORS — 불필요
+No static file serving in `api/main.py` — Vercel handles the frontend entirely.
 
-동일 origin에서 프론트와 API가 서빙되므로 CORS 설정이 **필요 없다**. 로컬 개발 시 Vite proxy (`localhost:5173` → `localhost:8000`)가 처리하므로 역시 불필요.
+### 7.3 CORS
 
-단, 기존 CORS 미들웨어는 **삭제하지 않고** 로컬 개발 편의를 위해 유지한다:
-
-```python
-# api/main.py — CORS 유지 (로컬 개발용)
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:5173"
-).split(",")
-```
-
-### 7.4 Health Check 엔드포인트
+Vercel and Render are different origins → CORS **required**.
+`api/main.py` already reads `ALLOWED_ORIGINS` from env var (no code change needed):
 
 ```python
-# api/main.py — 추가
-
-@app.get("/health")
-async def health_check(request: Request):
-    """Render health check + DB 연결 상태 확인.
-
-    Architecture: DEPLOYMENT_ARCHITECTURE.md §7
-    Used by: Render health check, UptimeRobot 모니터링
-    """
-    db = request.app.state.db
-    try:
-        if request.app.state.db_mode == "turso":
-            result = await db.execute("SELECT 1")
-        else:
-            await db.execute("SELECT 1")
-        return {"status": "ok", "db_mode": request.app.state.db_mode}
-    except Exception as e:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "error", "detail": str(e)},
-        )
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 ```
 
-### 7.5 requirements.txt 변경
+Set Render secret `ALLOWED_ORIGINS=https://llm-tester.vercel.app,http://localhost:5173`.
+
+### 7.4 Health Check
+
+`GET /health` implemented in `api/main.py` (Step 3).
+Returns `{"status": "ok", "db_mode": "turso"}` on success, 503 on DB failure.
+
+### 7.5 requirements.txt
 
 ```
-# api/requirements.txt — Phase 7 추가
-
-# ── 기존 ──
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.0
+python-dotenv
 aiosqlite>=0.20.0
-python-dotenv>=1.0.0
-
-# ── Phase 7 추가 ──
-libsql-client>=0.3.0        # Turso Python SDK (sync + async)
-cachetools>=5.3.0            # TTLCache (집계 쿼리 캐싱)
+libsql-client>=0.3.0
+cachetools>=5.3.0
 ```
 
-### 7.6 프론트엔드 코드 변경 — 없음
+### 7.6 Why Vercel + Render over Render single-deploy
 
-Render 단독 배포에서는 프론트엔드 코드 변경이 **불필요**하다:
-
-- `client.ts`의 baseURL은 기존 빈 값 (상대 경로 `/api/*`) → 동일 origin이므로 그대로 동작
-- `vite.config.ts`의 proxy 설정 → 로컬 개발 전용. 프로덕션에서는 사용되지 않음
-- 환경변수 (`VITE_API_URL`) → 불필요. 프론트와 API가 같은 도메인
+| Factor | Render single | Vercel + Render |
+|--------|--------------|-----------------|
+| UI Cold Start | 30~60s (server spin-down affects UI too) | None (Vercel CDN always on) |
+| Management | 1 service | 2 services, 1 domain each |
+| CORS | Not needed | Required (env var only) |
+| Frontend deploy | Bundled with API build | Independent, instant CDN |
 
 ## 8. Caching Strategy
 

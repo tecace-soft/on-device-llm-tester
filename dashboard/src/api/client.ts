@@ -1,8 +1,12 @@
 import axios, { AxiosError } from 'axios'
 import type { ApiResponse } from '@/types'
 
+// Empty string in local dev → Vite proxy handles /api/*
+// Set VITE_API_URL=https://llm-tester-api.onrender.com in .env.production for Vercel
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? ''
+
 const client = axios.create({
-  baseURL: '/api',
+  baseURL: `${API_BASE_URL}/api`,
   timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
