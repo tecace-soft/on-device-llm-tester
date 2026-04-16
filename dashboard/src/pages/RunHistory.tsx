@@ -113,7 +113,7 @@ export default function RunHistory() {
         {loading && <LoadingSkeleton rows={6} />}
         {!loading && !error && items.length === 0 && (
           <EmptyState
-            title="No runs yet"
+            message="No runs yet"
             description="Trigger a benchmark from GitHub Actions → Run workflow to see CI runs here."
           />
         )}
