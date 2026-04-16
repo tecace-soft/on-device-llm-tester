@@ -2,9 +2,16 @@
 
 ## 1. High-Level Overview
 
-> **Architecture change (Step 5):** Switched from Render single-deploy to
-> **Vercel (frontend) + Render (API) + Turso (DB)** split.
-> Original §18.2 "future option" is now the primary deployment plan.
+> **Architecture change (Step 5, revised):** Dropped Render entirely.
+> The FastAPI backend now runs as a **Vercel Python Serverless Function**
+> on the same Vercel project as the React frontend.
+> Stack: **Vercel (UI + API) + Turso (DB)**. Render config is kept only
+> as reference / rollback material.
+>
+> Why dropped: the deprecated ``libsql-client`` WebSocket SDK returned
+> HTTP 505 on Render; moving the backend to Vercel (no persistent
+> container) + a direct Turso HTTP v2 pipeline client eliminates both the
+> Cold Start problem and the extra service/domain to manage.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -476,85 +483,101 @@ Value: eyJhbGciOiJFZDI1NTE5...
 | 대시보드 데이터 소스 | 로컬 .db 파일 | Turso (실시간) |
 | CI 완료 → 대시보드 반영 | Artifact 다운로드 필요 | 즉시 반영 (Turso 직접 적재) |
 
-## 7. Deployment (Vercel + Render + Turso)
+## 7. Deployment (Vercel + Turso — no Render)
 
-> **Primary plan** — Vercel hosts the React frontend, Render hosts FastAPI (API only),
-> Turso is the database. Originally §18.2; promoted to primary in Step 5.
+> **Primary plan (Step 5 revised)** — A single Vercel project hosts both
+> the React frontend (static build) and the FastAPI backend (Python
+> Serverless Function). Turso is the database. Render is no longer part
+> of the production path.
 
-### 7.1 Vercel — Frontend
+### 7.0 Project Layout on Vercel
+
+```
+Repo root (Vercel Project root)
+├── vercel.json                 ← monorepo config (build + functions + rewrites)
+├── api/
+│   ├── index.py                ← Serverless entry (re-exports FastAPI app)
+│   ├── main.py                 ← FastAPI app + routes (unchanged logic)
+│   ├── turso_client.py         ← aiohttp → Turso HTTP v2 pipeline
+│   ├── db.py                   ← dual-mode lifespan; Turso branch uses TursoClient
+│   ├── db_adapter.py           ← unchanged (ResultSet shape preserved)
+│   └── requirements.txt        ← aiohttp replaces libsql-client
+└── dashboard/
+    ├── dist/                   ← built here, published as static output
+    └── src/api/client.ts       ← baseURL = '' (same origin)
+```
+
+Routing:
+- ``/api/*`` and ``/health`` → ``api/index.py`` (FastAPI handles the full path)
+- All other paths → static ``/index.html`` (SPA fallback)
+
+### 7.1 Vercel — Frontend + API (single project)
 
 ```json
-// dashboard/vercel.json
+// vercel.json  (at repo root)
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
+  "buildCommand": "cd dashboard && npm install && npm run build",
+  "outputDirectory": "dashboard/dist",
+  "installCommand": "echo 'skip root install'",
+  "framework": null,
+  "functions": {
+    "api/index.py": {
+      "runtime": "@vercel/python@4.3.0",
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/api/(.*)",           "destination": "/api/index.py" },
+    { "source": "/health",             "destination": "/api/index.py" },
+    { "source": "/((?!api/|health$).*)", "destination": "/index.html" }
   ]
 }
 ```
 
-```
-// dashboard/.env.production
-VITE_API_URL=https://llm-tester-api.onrender.com   // update after first Render deploy
+```python
+# api/index.py — Vercel Serverless entry
+from main import app   # FastAPI instance, unchanged routes
 ```
 
 ```ts
-// dashboard/src/api/client.ts — baseURL change
-// Empty string in local dev → Vite proxy handles /api/*
+// dashboard/src/api/client.ts — unchanged, defaults to same-origin
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? ''
-const client = axios.create({ baseURL: `${API_BASE_URL}/api`, ... })
+// Production: VITE_API_URL unset → '/api/...' resolves on the same Vercel domain.
 ```
 
 Vercel setup:
-1. Import GitHub repo → set Root Directory to `dashboard`
-2. Add env var `VITE_API_URL` (Render API URL)
-3. Auto-deploy on push to `main`
+1. Import GitHub repo — **Root Directory = repo root** (not `dashboard`).
+2. Vercel auto-detects ``vercel.json`` + ``api/requirements.txt``.
+3. Environment variables (Project Settings → Environment Variables):
+   - ``DB_MODE=turso``
+   - ``TURSO_URL=libsql://...``   (or ``https://...`` — both accepted)
+   - ``TURSO_AUTH_TOKEN=...``
+4. Auto-deploy on push to ``main``.
 
-### 7.2 Render — API only
+### 7.2 Render (legacy — kept for rollback only)
 
-```yaml
-# render.yaml
-services:
-  - type: web
-    name: llm-tester-api
-    runtime: python
-    buildCommand: pip install -r api/requirements.txt
-    startCommand: cd api && uvicorn main:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: DB_MODE
-        value: turso
-      - key: TURSO_URL
-        fromSecret: TURSO_URL
-      - key: TURSO_AUTH_TOKEN
-        fromSecret: TURSO_AUTH_TOKEN
-      - key: ALLOWED_ORIGINS
-        fromSecret: ALLOWED_ORIGINS   # e.g. https://llm-tester.vercel.app,http://localhost:5173
-      - key: PYTHON_VERSION
-        value: "3.11"
-    plan: free
-    autoDeploy: true
-    branch: main
-```
-
-No static file serving in `api/main.py` — Vercel handles the frontend entirely.
+``render.yaml`` remains in the repo as reference material for operators
+who want to spin up a fallback FastAPI container. It is **not** part of
+the production path any longer and is not required for the system to run.
 
 ### 7.3 CORS
 
-Vercel and Render are different origins → CORS **required**.
-`api/main.py` already reads `ALLOWED_ORIGINS` from env var (no code change needed):
+Frontend and API share the same origin (same Vercel domain), so CORS is
+**not required** in the default setup. ``api/main.py`` still reads
+``ALLOWED_ORIGINS`` from env so that custom domains or a local dev
+dashboard on a different port keep working:
 
 ```python
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 ```
 
-Set Render secret `ALLOWED_ORIGINS=https://llm-tester.vercel.app,http://localhost:5173`.
-
 ### 7.4 Health Check
 
-`GET /health` implemented in `api/main.py` (Step 3).
-Returns `{"status": "ok", "db_mode": "turso"}` on success, 503 on DB failure.
+``GET /health`` in ``api/main.py``. Returns
+``{"status": "ok", "db_mode": "turso"}`` on success, 503 on DB failure.
+UptimeRobot can ping ``https://<project>.vercel.app/health`` — though
+with Vercel Serverless the traditional "keep-alive to prevent spin-down"
+problem does not apply (see §9).
 
 ### 7.5 requirements.txt
 
@@ -564,18 +587,25 @@ uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
 python-dotenv
 aiosqlite>=0.20.0
-libsql-client>=0.3.0
+aiohttp>=3.9.0
 cachetools>=5.3.0
 ```
 
-### 7.6 Why Vercel + Render over Render single-deploy
+``libsql-client`` was removed — its WebSocket transport is deprecated
+and returned HTTP 505 on managed hosts. Replaced by
+``api/turso_client.py`` (thin aiohttp wrapper over Turso's HTTP v2
+pipeline).
 
-| Factor | Render single | Vercel + Render |
-|--------|--------------|-----------------|
-| UI Cold Start | 30~60s (server spin-down affects UI too) | None (Vercel CDN always on) |
-| Management | 1 service | 2 services, 1 domain each |
-| CORS | Not needed | Required (env var only) |
-| Frontend deploy | Bundled with API build | Independent, instant CDN |
+### 7.6 Why Vercel + Turso (no Render)
+
+| Factor              | Render single | Vercel + Render | **Vercel + Turso (current)** |
+|---------------------|--------------|-----------------|------------------------------|
+| UI Cold Start       | 30~60s       | 0 (CDN)         | 0 (CDN)                      |
+| API Cold Start      | 30~60s       | 30~60s (Render) | 1~3s (Vercel fn)             |
+| Services to manage  | 1            | 2               | 1                            |
+| CORS config needed  | No           | Yes             | No (same origin)             |
+| Persistent DB       | ❌ (no disk) | ✅ (Turso)      | ✅ (Turso)                   |
+| 505 from libsql-client WS | Yes    | Yes             | N/A (aiohttp HTTP v2)        |
 
 ## 8. Caching Strategy
 
@@ -731,10 +761,10 @@ Runner PC
 Turso Cloud (llm-tester-db.turso.io)
   └─ devices, models, prompts, results, runs
 
-Render (llm-tester.onrender.com)
-  └─ FastAPI + Vite build (단일 서비스)
-     ├─ /api/* → Turso 읽기 (libsql-client async)
-     └─ /* → React SPA (정적 파일)
+Vercel (llm-tester.vercel.app) — single project
+  ├─ /api/*, /health → api/index.py (Python Serverless, FastAPI)
+  │                    └─ TursoClient (aiohttp → /v2/pipeline)
+  └─ /*              → React SPA (dashboard/dist, static CDN)
 ```
 
 ## 12. Error Handling

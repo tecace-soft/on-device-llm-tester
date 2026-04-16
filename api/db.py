@@ -180,7 +180,7 @@ async def cleanup_zombie_runs(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
-# ── Turso (libsql-client) helpers ─────────────────────────────────────────────
+# ── Turso (HTTP v2 pipeline) helpers ──────────────────────────────────────────
 
 
 async def _migrate_columns_turso(db: Any) -> None:
@@ -244,8 +244,10 @@ async def _cleanup_zombie_runs_turso(db: Any) -> None:
 async def lifespan(app):
     """Architecture: DEPLOYMENT_ARCHITECTURE.md §4.1"""
     if DB_MODE == "turso":
-        import libsql_client  # type: ignore[import]
-        db = libsql_client.create_client(
+        # Switched from libsql-client (deprecated WS SDK → HTTP 505 on Render/Vercel)
+        # to a thin aiohttp wrapper over Turso's HTTP v2 pipeline API.
+        from turso_client import TursoClient
+        db = TursoClient(
             url=os.getenv("TURSO_URL", ""),
             auth_token=os.getenv("TURSO_AUTH_TOKEN", ""),
         )
