@@ -3,9 +3,8 @@ import { ChevronDown, ChevronUp } from 'lucide-react'
 import { ErrorFallback } from '@/components/feedback/ErrorFallback'
 import { EmptyState } from '@/components/feedback/EmptyState'
 import { LoadingSkeleton } from '@/components/feedback/LoadingSkeleton'
-import { StatusBadge } from './StatusBadge'
 import { useResults } from '@/hooks/useResults'
-import type { ResultItem, ValidationStatus } from '@/types'
+import type { ResultItem } from '@/types'
 
 interface Props {
   filters?: { device?: string; model?: string }

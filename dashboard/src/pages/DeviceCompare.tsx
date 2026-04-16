@@ -8,7 +8,7 @@ import { EmptyState } from '@/components/feedback/EmptyState'
 import { LoadingSkeleton } from '@/components/feedback/LoadingSkeleton'
 import { useDevices, useModels } from '@/hooks/useResults'
 import { useDeviceCompare } from '@/hooks/useDeviceCompare'
-import type { DeviceCompareResult, SummaryStats } from '@/types'
+import type { DeviceCompareResult } from '@/types'
 
 const DEVICE_COLORS = ['#6c63ff', '#4caf7d', '#f0a965', '#f06565']
 

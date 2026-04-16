@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { RefreshCw } from 'lucide-react'
 
 interface Props {
@@ -5,9 +6,10 @@ interface Props {
   subtitle?: string
   onRefresh?: () => void
   refreshing?: boolean
+  actions?: ReactNode
 }
 
-export function Header({ title, subtitle, onRefresh, refreshing }: Props) {
+export function Header({ title, subtitle, onRefresh, refreshing, actions }: Props) {
   return (
     <div
       className="flex items-center justify-between px-6 py-4 border-b shrink-0"
@@ -24,7 +26,7 @@ export function Header({ title, subtitle, onRefresh, refreshing }: Props) {
         )}
       </div>
 
-      {onRefresh && (
+      {actions ?? (onRefresh && (
         <button
           onClick={onRefresh}
           disabled={refreshing}
@@ -34,7 +36,7 @@ export function Header({ title, subtitle, onRefresh, refreshing }: Props) {
           <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
           Refresh
         </button>
-      )}
+      ))}
     </div>
   )
 }

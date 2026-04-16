@@ -64,8 +64,8 @@ export function CategorySimilarity({ byCategory, overallAvg }: Props) {
               fontSize: 11,
               color: 'var(--text-primary)',
             }}
-            formatter={(value: number, _name: string, entry: any) => [
-              `${value.toFixed(1)}% (${entry.payload.pairs} pairs)`,
+            formatter={(value, _name, entry: any) => [
+              `${Number(value).toFixed(1)}% (${entry.payload.pairs} pairs)`,
               'Similarity',
             ]}
           />
