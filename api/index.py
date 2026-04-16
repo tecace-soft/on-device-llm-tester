@@ -16,6 +16,21 @@ Path routing:
     and ``/health``), unchanged from the existing implementation.
 """
 
+# Why this sys.path shim:
+#   Vercel's Python runtime loads this file as a top-level module
+#   (``vc__handler__python`` imports it) but does NOT add ``api/`` to
+#   sys.path. Without this, ``from main import app`` raises
+#   ``ModuleNotFoundError: No module named 'main'``, which is exactly
+#   what the production logs showed after the first deploy.
+#   Locally (``uvicorn main:app``) the CWD is already ``api/`` so this
+#   is a no-op.
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 from main import app
 
 # Vercel's ASGI adapter picks up this symbol by name.
