@@ -66,6 +66,43 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def ensure_db_setup(request: Request, call_next):
+    """
+    Vercel(AWS Lambda) 환경에서 lifespan이 실행되지 않는 문제를 해결하는 로직
+    """
+    is_vercel = os.getenv("VERCEL") == "1"
+    
+    if not hasattr(request.app.state, "db"):
+        db_mode = os.getenv("DB_MODE", "local")
+        request.app.state.db_mode = db_mode
+        
+        if db_mode == "turso":
+            from turso_client import TursoClient # 파일 상단 대신 여기서 import
+            request.app.state.db = TursoClient(
+                url=os.getenv("TURSO_URL", ""),
+                auth_token=os.getenv("TURSO_AUTH_TOKEN", ""),
+            )
+        else:
+            # 로컬 개발 환경용 fallback
+            # from loader import load_all
+            # request.app.state.db = load_all()
+            import sqlite3
+            # 예시: 로컬 db 파일 경로를 지정하여 연결
+            conn = sqlite3.connect("llm_tester.db", check_same_thread=False)
+            request.app.state.db = conn
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        # Vercel에서만 요청 종료 후 세션 정리 (중요!)
+        if is_vercel and hasattr(request.app.state, "db") and os.getenv("DB_MODE") == "turso":
+            db = getattr(request.app.state, "db", None)
+            if db is not None:
+                await db.close()
+                delattr(request.app.state, "db")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -106,7 +143,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 def _db(request: Request) -> DbAdapter:
-    return DbAdapter(request.app.state.db, request.app.state.db_mode)
+    # middleware에서 설정한 값을 안전하게 읽어옴
+    db = getattr(request.app.state, "db", None)
+    db_mode = getattr(request.app.state, "db_mode", "local")
+    
+    if db is None:
+        raise HTTPException(
+            status_code=500, 
+            detail="Database connection not initialized. Check Vercel logs."
+        )
+        
+    return DbAdapter(db, db_mode)
 
 
 # ── /health ───────────────────────────────────────────────────────────────────
