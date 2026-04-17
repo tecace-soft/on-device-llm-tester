@@ -156,6 +156,26 @@ def _db(request: Request) -> DbAdapter:
     return DbAdapter(db, db_mode)
 
 
+# ── /auth ─────────────────────────────────────────────────────────────────────
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request):
+    """Dashboard password gate — validates against DASHBOARD_PASSWORD env var.
+
+    Architecture: DEPLOYMENT_ARCHITECTURE.md §9
+    Used by: dashboard Login page
+    Why server-side: keeps the password out of the JS bundle entirely.
+    If DASHBOARD_PASSWORD is unset, any submission is accepted (open access).
+    """
+    body = await request.json()
+    password: str = body.get("password", "")
+    expected: str = os.getenv("DASHBOARD_PASSWORD", "")
+    if not expected or password == expected:
+        return {"ok": True}
+    return JSONResponse(status_code=401, content={"ok": False, "error": "Invalid password"})
+
+
 # ── /health ───────────────────────────────────────────────────────────────────
 
 
