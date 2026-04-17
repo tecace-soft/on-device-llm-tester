@@ -12,7 +12,8 @@
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/auth/(.*)", "destination": "/api/index.py" },
     { "source": "/health", "destination": "/api/index.py" },
-    { "source": "/((?!api/|health$).*)", "destination": "/index.html" }
+    { "source": "/((?!api/|auth/|health$).*)", "destination": "/index.html" }
   ]
 }
