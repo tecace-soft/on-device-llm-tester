@@ -112,7 +112,12 @@ Phase 7 Cloud Deployment 구현 중. 진행 상황:
   - `api/index.py` 신규 — Vercel Python Serverless entry (`from main import app`)
   - `vercel.json` 루트 추가 — monorepo build(dashboard/dist) + `api/index.py` function + rewrites
   - `DEPLOYMENT_ARCHITECTURE.md` §1·§7 업데이트 (Vercel+Turso primary, Render legacy)
-- 🔲 Step 6: 통합 테스트 + README 업데이트
+- ✅ Step 6: 통합 테스트 + README 업데이트 완료
+  - Vercel deployment 정상 작동 확인 (`https://on-device-llm-tester.vercel.app`)
+  - README §2.3 env vars, §4.4/4.5 Cloud URLs, §9 Cloud Deployment 섹션, §10 Architecture Docs, §11 Roadmap 업데이트
+
+## Phase 7 완료 ✅
 
 Deployment stack: **Vercel** (React UI + FastAPI Serverless) + **Turso** (libSQL HTTP v2)
+Live URL: `https://on-device-llm-tester.vercel.app`
 See `DEPLOYMENT_ARCHITECTURE.md` for full plan.
