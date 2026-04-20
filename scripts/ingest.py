@@ -91,12 +91,14 @@ CREATE TABLE IF NOT EXISTS models (
 );
 
 CREATE TABLE IF NOT EXISTS prompts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    prompt_id   TEXT NOT NULL UNIQUE,
-    category    TEXT NOT NULL DEFAULT '',
-    lang        TEXT NOT NULL DEFAULT 'en',
-    prompt_text TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt_id     TEXT NOT NULL UNIQUE,
+    category      TEXT NOT NULL DEFAULT '',
+    lang          TEXT NOT NULL DEFAULT 'en',
+    prompt_text   TEXT NOT NULL DEFAULT '',
+    ground_truth  TEXT,
+    eval_strategy TEXT NOT NULL DEFAULT 'none',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -148,6 +150,10 @@ CREATE TABLE IF NOT EXISTS results (
     current_after_ua      INTEGER,
     system_pss_mb         REAL,
     profiling_error       TEXT,
+
+    -- Phase 4a: Response validation columns
+    validation_status     TEXT,
+    validation_detail     TEXT,
 
     timestamp  INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -748,6 +754,90 @@ def init_tables_turso(client) -> None:
     batch = [_TursoStatement(s) for s in statements]
     client.batch(batch)
     logger.info("Turso: DDL init complete (%d statements)", len(batch))
+
+    # Migration for pre-existing Turso DBs created before schema additions.
+    # Why: CREATE TABLE IF NOT EXISTS does not add columns to existing tables.
+    # Mirrors init_tables() local migrations so Turso stays in sync.
+    _migrate_turso_schema(client)
+
+
+def _migrate_turso_schema(client) -> None:
+    """Add missing columns to existing Turso tables via ALTER TABLE.
+
+    Used by: init_tables_turso()
+    """
+    def _existing_cols(table: str) -> set:
+        rs = client.execute(f"PRAGMA table_info({table})")
+        # PRAGMA table_info returns rows: (cid, name, type, notnull, dflt_value, pk)
+        return {row[1] for row in rs.rows}
+
+    # prompts: Phase 4a (ground_truth, eval_strategy)
+    prompt_cols = _existing_cols("prompts")
+    prompt_migrations = []
+    if "ground_truth" not in prompt_cols:
+        prompt_migrations.append("ALTER TABLE prompts ADD COLUMN ground_truth TEXT")
+    if "eval_strategy" not in prompt_cols:
+        prompt_migrations.append(
+            "ALTER TABLE prompts ADD COLUMN eval_strategy TEXT NOT NULL DEFAULT 'none'"
+        )
+
+    # results: Phase 2 (run_id), Phase 4a (validation_*), Phase 6 (profiling)
+    result_cols = _existing_cols("results")
+    result_migrations = []
+    if "run_id" not in result_cols:
+        result_migrations.append(
+            "ALTER TABLE results ADD COLUMN run_id INTEGER REFERENCES runs(id)"
+        )
+    if "validation_status" not in result_cols:
+        result_migrations.append("ALTER TABLE results ADD COLUMN validation_status TEXT")
+    if "validation_detail" not in result_cols:
+        result_migrations.append("ALTER TABLE results ADD COLUMN validation_detail TEXT")
+
+    phase6_cols = {
+        "battery_level_start": "INTEGER",
+        "battery_level_end":   "INTEGER",
+        "thermal_start":       "INTEGER",
+        "thermal_end":         "INTEGER",
+        "voltage_start_mv":    "INTEGER",
+        "voltage_end_mv":      "INTEGER",
+        "current_before_ua":   "INTEGER",
+        "current_after_ua":    "INTEGER",
+        "system_pss_mb":       "REAL",
+        "profiling_error":     "TEXT",
+    }
+    for col_name, col_type in phase6_cols.items():
+        if col_name not in result_cols:
+            result_migrations.append(
+                f"ALTER TABLE results ADD COLUMN {col_name} {col_type}"
+            )
+
+    # models: Phase 5 (engine)
+    model_cols = _existing_cols("models")
+    model_migrations = []
+    if "engine" not in model_cols:
+        model_migrations.append(
+            "ALTER TABLE models ADD COLUMN engine TEXT NOT NULL DEFAULT 'mediapipe'"
+        )
+
+    all_migrations = prompt_migrations + result_migrations + model_migrations
+    if not all_migrations:
+        logger.info("Turso: schema is up to date (no migrations needed)")
+        return
+
+    # Execute one by one; an individual failure (e.g. racing init) shouldn't
+    # abort the rest.
+    applied = 0
+    for sql in all_migrations:
+        try:
+            client.execute(sql)
+            applied += 1
+        except Exception as e:
+            # "duplicate column" means another client migrated first — tolerable.
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                continue
+            logger.warning("Turso migration failed (%s): %s", sql, e)
+    logger.info("Turso: applied %d/%d schema migrations", applied, len(all_migrations))
 
 
 def create_run_turso(client, run_id: str, trigger: str,
