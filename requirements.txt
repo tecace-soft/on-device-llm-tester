@@ -3,6 +3,3 @@ uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
 python-dotenv
 aiosqlite>=0.20.0
- 
-# Phase 7: Turso Cloud DB (DEPLOYMENT_ARCHITECTURE.md §5)
-libsql-client>=0.3.0

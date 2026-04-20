@@ -26,11 +26,13 @@ Usage:
 """
 
 import argparse
+import base64 as _base64
 import json
 import logging
 import os
 import sqlite3
 import sys
+import urllib.request as _urllib_request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -586,21 +588,154 @@ def ingest(con: sqlite3.Connection, run_pk: Optional[int]) -> tuple[int, int, in
 # Architecture: DEPLOYMENT_ARCHITECTURE.md §5
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _get_turso_client():
-    """Create a synchronous Turso client.
+# ── Turso HTTP v2 sync client ─────────────────────────────────────────────────
+# Replaces libsql-client (WebSocket/wss://) which returns HTTP 505 on Turso.
+# Uses stdlib urllib to POST against Turso's /v2/pipeline endpoint.
+
+
+class _TursoStatement:
+    """Mirrors libsql_client.Statement for drop-in compatibility."""
+
+    __slots__ = ("sql", "args")
+
+    def __init__(self, sql: str, args: Optional[list] = None) -> None:
+        self.sql = sql
+        self.args = args or []
+
+
+class _TursoResultSet:
+    """Mirrors libsql_client.ResultSet — exposes .rows and .rows_affected."""
+
+    __slots__ = ("columns", "rows", "rows_affected", "last_insert_rowid")
+
+    def __init__(
+        self,
+        columns: Optional[list] = None,
+        rows: Optional[list] = None,
+        rows_affected: int = 0,
+        last_insert_rowid: Optional[int] = None,
+    ) -> None:
+        self.columns = columns or []
+        self.rows = rows or []
+        self.rows_affected = rows_affected
+        self.last_insert_rowid = last_insert_rowid
+
+
+def _turso_encode(v: Any) -> dict:
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, bool):
+        return {"type": "integer", "value": "1" if v else "0"}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    if isinstance(v, (bytes, bytearray)):
+        return {"type": "blob", "base64": _base64.b64encode(bytes(v)).decode()}
+    return {"type": "text", "value": str(v)}
+
+
+def _turso_decode(cell: dict) -> Any:
+    t = cell.get("type")
+    if t == "null":
+        return None
+    if t == "integer":
+        return int(cell["value"])
+    if t == "float":
+        return float(cell["value"])
+    if t == "blob":
+        return _base64.b64decode(cell.get("base64", ""))
+    return cell.get("value", "")
+
+
+class _TursoSyncClient:
+    """Synchronous Turso client over HTTP v2 pipeline.
+
+    Why: libsql-client uses WebSocket (wss://) which returns HTTP 505 on Turso.
+    Used by: _get_turso_client()
+    """
+
+    def __init__(self, url: str, token: str) -> None:
+        self._url = url.replace("libsql://", "https://") + "/v2/pipeline"
+        self._token = token
+
+    def _pipeline(self, stmts: list) -> list:
+        reqs: list = []
+        for s in stmts:
+            if isinstance(s, _TursoStatement):
+                sql, args = s.sql, s.args
+            elif isinstance(s, str):
+                sql, args = s, []
+            else:
+                sql, args = s[0], (s[1] if len(s) > 1 else [])
+            reqs.append({"type": "execute", "stmt": {
+                "sql": sql,
+                "args": [_turso_encode(a) for a in (args or [])],
+            }})
+        reqs.append({"type": "close"})
+
+        body = json.dumps({"requests": reqs}).encode()
+        req = _urllib_request.Request(
+            self._url,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with _urllib_request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+
+        results: list = []
+        for entry in data.get("results", []):
+            if entry.get("type") == "error":
+                err = entry.get("error", {})
+                msg = err.get("message") if isinstance(err, dict) else str(err)
+                raise RuntimeError(f"Turso pipeline error: {msg}")
+            if entry.get("type") != "ok":
+                continue
+            resp_body = entry.get("response", {})
+            if resp_body.get("type") != "execute":
+                continue
+            result = resp_body.get("result") or {}
+            cols = [c.get("name", "") for c in result.get("cols") or []]
+            rows = [
+                [_turso_decode(cell) for cell in row]
+                for row in (result.get("rows") or [])
+            ]
+            affected = int(result.get("affected_row_count") or 0)
+            last_id = result.get("last_insert_rowid")
+            results.append(_TursoResultSet(
+                columns=cols,
+                rows=rows,
+                rows_affected=affected,
+                last_insert_rowid=int(last_id) if last_id is not None else None,
+            ))
+        return results
+
+    def execute(self, sql: str, args: Optional[list] = None) -> _TursoResultSet:
+        rs = self._pipeline([_TursoStatement(sql, args or [])])
+        return rs[0] if rs else _TursoResultSet()
+
+    def batch(self, stmts: list) -> list:
+        return self._pipeline(stmts)
+
+    def close(self) -> None:
+        pass
+
+
+def _get_turso_client() -> _TursoSyncClient:
+    """Create a synchronous Turso HTTP v2 client.
 
     Used by: main() when DB_MODE=turso
-    Depends on: libsql_client (pip install libsql-client)
     """
-    import libsql_client
-
     url = os.getenv("TURSO_URL")
     token = os.getenv("TURSO_AUTH_TOKEN")
     if not url or not token:
         logger.error("TURSO_URL and TURSO_AUTH_TOKEN must be set when DB_MODE=turso")
         sys.exit(1)
 
-    return libsql_client.create_client_sync(url=url, auth_token=token)
+    return _TursoSyncClient(url=url, token=token)
 
 
 def init_tables_turso(client) -> None:
@@ -609,10 +744,8 @@ def init_tables_turso(client) -> None:
     Architecture: DEPLOYMENT_ARCHITECTURE.md §5.3
     Used by: main() turso branch
     """
-    import libsql_client
-
     statements = [s.strip() for s in _DDL.split(";") if s.strip()]
-    batch = [libsql_client.Statement(s) for s in statements]
+    batch = [_TursoStatement(s) for s in statements]
     client.batch(batch)
     logger.info("Turso: DDL init complete (%d statements)", len(batch))
 
@@ -624,10 +757,8 @@ def create_run_turso(client, run_id: str, trigger: str,
     Architecture: DEPLOYMENT_ARCHITECTURE.md §5.3
     Used by: main() turso branch
     """
-    import libsql_client
-
     client.batch([
-        libsql_client.Statement(
+        _TursoStatement(
             "INSERT OR IGNORE INTO runs (run_id, trigger, commit_sha, branch, started_at, status) "
             "VALUES (?, ?, ?, ?, datetime('now'), 'running')",
             [run_id, trigger, commit_sha, branch],
@@ -642,8 +773,6 @@ def finalize_run_turso(client, run_pk: int, status: str) -> None:
 
     Architecture: DEPLOYMENT_ARCHITECTURE.md §5.3
     """
-    import libsql_client
-
     client.execute(
         "UPDATE runs SET finished_at = datetime('now'), status = ? WHERE id = ?",
         [status, run_pk],
@@ -651,15 +780,13 @@ def finalize_run_turso(client, run_pk: int, status: str) -> None:
 
 
 def _build_dimension_stmts(rec: dict) -> list:
-    """Build libsql_client.Statement list for dimension upserts (device, model, prompt).
+    """Build _TursoStatement list for dimension upserts (device, model, prompt).
 
     Architecture: DEPLOYMENT_ARCHITECTURE.md §5.2
     Used by: ingest_turso()
     """
-    import libsql_client
-
     return [
-        libsql_client.Statement(
+        _TursoStatement(
             "INSERT OR IGNORE INTO devices "
             "(manufacturer, model, product, soc, android_version, sdk_int, cpu_cores, max_heap_mb) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -667,12 +794,12 @@ def _build_dimension_stmts(rec: dict) -> list:
              rec["soc"], rec["android_version"], rec["sdk_int"],
              rec["cpu_cores"], rec["max_heap_mb"]],
         ),
-        libsql_client.Statement(
+        _TursoStatement(
             "INSERT OR IGNORE INTO models (model_name, model_path, backend, engine) "
             "VALUES (?, ?, ?, ?)",
             [rec["model_name"], rec["model_path"], rec["backend"], rec["engine"]],
         ),
-        libsql_client.Statement(
+        _TursoStatement(
             "INSERT OR IGNORE INTO prompts (prompt_id, category, lang, prompt_text) "
             "VALUES (?, ?, ?, ?)",
             [rec["prompt_id"], rec["category"], rec["lang"], rec["prompt_text"]],
@@ -681,7 +808,7 @@ def _build_dimension_stmts(rec: dict) -> list:
 
 
 def _build_result_insert_stmt(rec: dict, run_pk: Optional[int]):
-    """Build a single libsql_client.Statement for results INSERT.
+    """Build a single _TursoStatement for results INSERT.
 
     Why subqueries: Turso batch executes in a single HTTP round-trip.
     Dimension PKs are resolved via inline subqueries instead of separate SELECT calls,
@@ -690,9 +817,7 @@ def _build_result_insert_stmt(rec: dict, run_pk: Optional[int]):
     Architecture: DEPLOYMENT_ARCHITECTURE.md §5.2
     Used by: ingest_turso()
     """
-    import libsql_client
-
-    return libsql_client.Statement(
+    return _TursoStatement(
         """
         INSERT OR IGNORE INTO results (
             device_id, model_id, prompt_id, run_id,
@@ -761,8 +886,6 @@ def ingest_turso(client, run_pk: Optional[int]) -> tuple[int, int, int]:
     Used by: main() (CLI entry point)
     Depends on: parse_result_file(), _build_dimension_stmts(), _build_result_insert_stmt()
     """
-    import libsql_client
-
     inserted = skipped = errors = 0
 
     json_files = sorted(RESULTS_DIR.rglob("*.json"))
@@ -795,7 +918,7 @@ def ingest_turso(client, run_pk: Optional[int]) -> tuple[int, int, int]:
         dev_key = (rec["manufacturer"], rec["device_model"], rec["product"])
         if dev_key not in seen_devices:
             seen_devices.add(dev_key)
-            dim_stmts.append(libsql_client.Statement(
+            dim_stmts.append(_TursoStatement(
                 "INSERT OR IGNORE INTO devices "
                 "(manufacturer, model, product, soc, android_version, sdk_int, cpu_cores, max_heap_mb) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -807,7 +930,7 @@ def ingest_turso(client, run_pk: Optional[int]) -> tuple[int, int, int]:
         mod_key = (rec["model_name"], rec["model_path"], rec["backend"], rec["engine"])
         if mod_key not in seen_models:
             seen_models.add(mod_key)
-            dim_stmts.append(libsql_client.Statement(
+            dim_stmts.append(_TursoStatement(
                 "INSERT OR IGNORE INTO models (model_name, model_path, backend, engine) "
                 "VALUES (?, ?, ?, ?)",
                 [rec["model_name"], rec["model_path"], rec["backend"], rec["engine"]],
@@ -816,7 +939,7 @@ def ingest_turso(client, run_pk: Optional[int]) -> tuple[int, int, int]:
         prm_key = rec["prompt_id"]
         if prm_key not in seen_prompts:
             seen_prompts.add(prm_key)
-            dim_stmts.append(libsql_client.Statement(
+            dim_stmts.append(_TursoStatement(
                 "INSERT OR IGNORE INTO prompts (prompt_id, category, lang, prompt_text) "
                 "VALUES (?, ?, ?, ?)",
                 [rec["prompt_id"], rec["category"], rec["lang"], rec["prompt_text"]],
@@ -855,8 +978,6 @@ def sync_ground_truth_turso(client, config_path: Path) -> int:
 
     Architecture: DEPLOYMENT_ARCHITECTURE.md §5
     """
-    import libsql_client
-
     prompt_map = _load_config_prompt_map(config_path)
     if not prompt_map:
         return 0
@@ -872,7 +993,7 @@ def sync_ground_truth_turso(client, config_path: Path) -> int:
                            eval_strategy, prompt_id)
             eval_strategy = "none"
 
-        stmts.append(libsql_client.Statement(
+        stmts.append(_TursoStatement(
             "UPDATE prompts SET ground_truth = ?, eval_strategy = ? WHERE prompt_id = ?",
             [ground_truth, eval_strategy, prompt_id],
         ))
