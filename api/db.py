@@ -36,12 +36,14 @@ CREATE TABLE IF NOT EXISTS models (
 );
 
 CREATE TABLE IF NOT EXISTS prompts (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    prompt_id   TEXT NOT NULL UNIQUE,
-    category    TEXT NOT NULL DEFAULT '',
-    lang        TEXT NOT NULL DEFAULT 'en',
-    prompt_text TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt_id     TEXT NOT NULL UNIQUE,
+    category      TEXT NOT NULL DEFAULT '',
+    lang          TEXT NOT NULL DEFAULT 'en',
+    prompt_text   TEXT NOT NULL DEFAULT '',
+    ground_truth  TEXT,
+    eval_strategy TEXT NOT NULL DEFAULT 'none',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -93,6 +95,10 @@ CREATE TABLE IF NOT EXISTS results (
     current_after_ua      INTEGER,
     system_pss_mb         REAL,
     profiling_error       TEXT,
+
+    -- Phase 4a: Response validation columns
+    validation_status     TEXT,
+    validation_detail     TEXT,
 
     timestamp  INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
