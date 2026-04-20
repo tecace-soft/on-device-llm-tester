@@ -1,0 +1,90 @@
+name: Test Turso Ingest
+
+# Manual-only trigger — does not touch production Turso DB.
+# Requires TURSO_URL_TEST and TURSO_AUTH_TOKEN_TEST in repository secrets.
+# Setup: turso db create llm-tester-db-test
+on:
+  workflow_dispatch:
+
+jobs:
+  test-turso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create empty results dir (ingest.py requires it to exist)
+        run: mkdir -p results
+
+      - name: Run ingest (Turso test DB)
+        env:
+          DB_MODE: turso
+          TURSO_URL: ${{ secrets.TURSO_URL_TEST }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN_TEST }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python scripts/ingest.py \
+            --run-id ${{ github.run_id }} \
+            --trigger manual \
+            --commit-sha ${{ github.sha }} \
+            --branch ci-test
+
+      - name: Verify run record written to Turso
+        env:
+          TURSO_URL: ${{ secrets.TURSO_URL_TEST }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN_TEST }}
+        run: |
+          python - <<'EOF'
+          import os, sys, urllib.request, json
+
+          url = os.environ["TURSO_URL"].replace("libsql://", "https://") + "/v2/pipeline"
+          token = os.environ["TURSO_AUTH_TOKEN"]
+          run_id = "${{ github.run_id }}"
+
+          body = json.dumps({
+              "requests": [
+                  {"type": "execute", "stmt": {
+                      "sql": "SELECT id, run_id, branch, status FROM runs WHERE run_id = ?",
+                      "args": [{"type": "text", "value": run_id}]
+                  }},
+                  {"type": "close"}
+              ]
+          }).encode()
+
+          req = urllib.request.Request(
+              url,
+              data=body,
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              data = json.loads(resp.read())
+
+          rows = data["results"][0]["response"]["result"]["rows"]
+          if not rows:
+              print(f"FAIL: No run record found for run_id={run_id}")
+              sys.exit(1)
+
+          row = rows[0]
+          print(f"OK: run found — id={row[0]['value']}, run_id={row[1]['value']}, branch={row[2]['value']}, status={row[3]['value']}")
+          EOF
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Turso Connection Test" >> $GITHUB_STEP_SUMMARY
+          echo "- Run ID: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- DB: TURSO_URL_TEST (test database, not production)" >> $GITHUB_STEP_SUMMARY
